@@ -122,3 +122,22 @@ jobs:
 
       - name: Pull real images, docker save, compare vs dive (every diff printed; tolerances unloosened)
         run: DIVE=/tmp/dive tools/check-real-images.sh
+
+      - name: Upload comparison outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-images-outputs
+          path: /tmp/layerscope-real-images
+          if-no-files-found: warn
+
+      - name: Comment comparison log on the PR on failure
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const log = (() => { try { return fs.readFileSync('/tmp/layerscope-real-images/compare.log', 'utf8'); } catch { return '(no compare.log — job failed before comparison ran; likely a pull/setup failure)'; } })();
+            const tail = log.length > 12000 ? '…\n' + log.slice(-12000) : log;
+            const body = ['**real-images CI failed.** Tolerances were not loosened; here is the raw comparison log (tail):', '', '```', tail, '```', '', 'Full outputs are in the `real-images-outputs` artifact.'].join('\n');
+            await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
