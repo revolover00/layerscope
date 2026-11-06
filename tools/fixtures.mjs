@@ -3,7 +3,7 @@
 // the goldens dive itself produced (internal/imagefixture/testdata/golden/).
 // The specs below are a 1:1 port of the Go fixture definitions.
 
-import { synthesizeRaw, synthesizeRawAsync } from './synth-lib.mjs';
+import { synthesizeRaw, synthesizeRawAsync, buildLayerTar, dockerConfig, tarballOf, sha256 } from './synth-lib.mjs';
 
 const dir = (name) => ({ name, typeflag: '5' });
 const file = (name, content, extra = {}) => ({ name, content: Buffer.from(content), ...extra });
@@ -188,4 +188,53 @@ export async function buildFixtureAsync(name) {
     history: spec.history,
     repoTag: 'fixture:latest',
   });
+}
+
+/**
+ * Multi-platform OCI index fixture: one index.json, two manifests
+ * (linux/amd64 and linux/arm64/v8) with different layer payloads so the
+ * selected platform is observable from the analysis.
+ */
+export async function buildMultiManifestFixture() {
+  const mkSpec = (tag) => ({
+    layers: [[dir('bin/'), file(`bin/${tag}-tool`, `payload:${tag}\n`.repeat(64)), file('etc/os-release', `ID=${tag}\n`)]],
+    history: [run(`install ${tag} tool`)],
+  });
+  const arches = [
+    { os: 'linux', architecture: 'amd64', variant: null, tag: 'amd64' },
+    { os: 'linux', architecture: 'arm64', variant: 'v8', tag: 'arm64v8' },
+  ];
+  const files = [];
+  const indexManifests = [];
+  for (const a of arches) {
+    const spec = mkSpec(a.tag);
+    const layerTar = buildLayerTar(spec.layers[0]);
+    const diffId = sha256(layerTar);
+    const configJson = dockerConfig([diffId], spec.history);
+    const configDigest = sha256(configJson);
+    const manifest = Buffer.from(JSON.stringify({
+      schemaVersion: 2,
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      config: { mediaType: 'application/vnd.oci.image.config.v1+json', digest: `sha256:${configDigest}`, size: configJson.length },
+      layers: [{ mediaType: 'application/vnd.oci.image.layer.v1.tar', digest: `sha256:${diffId}`, size: layerTar.length }],
+    }, null, 2));
+    const manifestDigest = sha256(manifest);
+    files.push({ name: `blobs/sha256/${diffId}`, data: layerTar });
+    files.push({ name: `blobs/sha256/${configDigest}`, data: configJson });
+    files.push({ name: `blobs/sha256/${manifestDigest}`, data: manifest });
+    indexManifests.push({
+      mediaType: 'application/vnd.oci.image.manifest.v1+json',
+      digest: `sha256:${manifestDigest}`,
+      size: manifest.length,
+      annotations: { 'io.containerd.image.name': 'docker.io/library/multi/fixture:latest', 'org.opencontainers.image.ref.name': 'fixture:latest' },
+      platform: { os: a.os, architecture: a.architecture, ...(a.variant ? { variant: a.variant } : {}) },
+    });
+  }
+  files.push({ name: 'oci-layout', data: Buffer.from(JSON.stringify({ imageLayoutVersion: '1.0.0' })) });
+  files.push({ name: 'index.json', data: Buffer.from(JSON.stringify({
+    schemaVersion: 2,
+    mediaType: 'application/vnd.oci.image.index.v1+json',
+    manifests: indexManifests,
+  }, null, 2)) });
+  return tarballOf(files);
 }
