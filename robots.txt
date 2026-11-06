@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://revolover00.github.io/layerscope/sitemap.xml

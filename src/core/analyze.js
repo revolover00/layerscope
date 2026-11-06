@@ -511,9 +511,9 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     selectedPlatform,
   };
   } finally {
-    // WebAssembly linear memory can never shrink in place — the only ways to
-    // release it are dropping the instance for the engine to GC (node) or
-    // terminating the module worker that owns it (browser).
+    // The decode worker holds the only decoder state for this analysis; the
+    // platform may not reclaim that memory until the worker is dropped for the
+    // engine to GC (node) or explicitly terminated (browser).
     const session = sessionHolder.session;
     sessionHolder.session = null;
     if (session && typeof session.terminate === 'function') {

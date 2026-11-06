@@ -26,7 +26,7 @@ jobs:
       - name: Stage site
         run: |
           mkdir -p _site
-          cp index.html .nojekyll _site/
+          cp index.html 404.html .nojekyll robots.txt sitemap.xml _site/
           cp -r assets src _site/
 
       - uses: actions/configure-pages@v5

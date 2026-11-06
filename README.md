@@ -122,7 +122,7 @@ Numbers below are real output from this repository, not aspirations.
 
 ```
 $ npm test          # node --test
-# tests 33   # pass 33   # fail 0
+# tests 44   # pass 44   # fail 0
 ```
 
 ### layerscope vs. dive's own golden files
@@ -222,9 +222,9 @@ overflow at 1440 px or 390 px, and the sample flow is unchanged.
 
 ### Browser check (headless Chromium)
 
-Verified by driving a real Chromium (via playwright-core and
-`@sparticuz/chromium`, desktop 1440×900 and mobile 390×844, against the staged
-site that `pages.yml` deploys): landing page, invalid-file error path, sample
+Verified by driving a real Chromium (via playwright-core, desktop 1440×900 and
+mobile 390×844, against the staged site that `pages.yml` deploys — see
+`.github/workflows/browser-bench.yml` and `tools/browser-bench.mjs`): landing page, invalid-file error path, sample
 (then demo) analysis, file-path and kind filters, wasted-space filter, top-files scope
 toggle, back-to-landing navigation, and console/page errors — no horizontal
 overflow and no JS errors in any of those views. It found critical bugs jsdom
@@ -458,9 +458,13 @@ cost on incompressible bytes, not on typical images.
 
 ```
 index.html              static app (landing + analysis views)
+404.html                branded not-found page (deployed by pages.yml)
+sitemap.xml / robots.txt  crawl entry points for the hosted site
 assets/style.css        Vercel-inspired design system (self-hosted Geist, no frameworks, inline SVG icons)
 assets/fonts/           Geist Sans/Mono woff2, subset latin, OFL (GEIST-LICENSE.txt)
+assets/og.png           social preview card (og:image / twitter:image)
 assets/vendor/fzstd/    vendored fzstd 0.1.1 (MIT) — see assets/vendor/fzstd/LICENSE.txt
+assets/samples/layerscope-demo.tar  bundled sample for "Try a sample image" (regenerate: node tools/make-sample.mjs)
 src/app.js              UI orchestration (dropzone, tabs, rendering)
 assets/samples/layerscope-demo.tar  bundled sample for "Try a sample image" (regenerate: node tools/make-sample.mjs)
 tools/make-sample.mjs   deterministic sample generator (seeded PRNG)
@@ -481,6 +485,11 @@ tools/browser-limit.mjs 600 MiB-claim archive vs the browser fallback limit (Pla
 tools/check-real-images.sh  pull public images, compare vs dive CLI (used by ci.yml real-images job)
 tests/                  node --test unit tests
 LICENSE                 MIT
+CHANGELOG.md            release history (Keep a Changelog + semver)
+SECURITY.md             private vulnerability reporting channel
+CONTRIBUTING.md         ground rules + workflow (PR checklist, dive compat)
+.github/pull_request_template.md / .github/ISSUE_TEMPLATE/  contribution plumbing
+.editorconfig / .gitattributes  whitespace and encoding hygiene
 samples/                Dockerfiles used by CI (add-delete, overwrite, multi-waste, clean)
 .github/workflows/ci.yml    unit tests + golden verification + samples vs dive
 .github/workflows/pages.yml static deploy to GitHub Pages
