@@ -279,7 +279,8 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
         let targetKnown = false;
         if (lowerNode) {
           targetKnown = true;
-          removedBytes = lowerNode.isDir ? squashed.headerSizeOfSubtree(target) : 0;
+          // informative only (efficiency math sized by the caller contract: 0 for files, subtree for dirs)
+          removedBytes = lowerNode.isDir ? squashed.headerSizeOfSubtree(target) : lowerNode.size;
         }
         deleted.push({
           path: target,
@@ -315,7 +316,9 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
     }
 
     // --- largest entries across the whole image (bounded to the biggest topLimit) ---
+    // whiteout/opaque marker entries carry no bytes and mean nothing as "top files"
     for (const e of entries) {
+      if (isWhiteout(e.path) || isOpaqueMarker(e.path)) continue;
       if (e.type === 'file' || e.type === 'hardlink') {
         allLargestEntries.add({ path: e.path, size: e.size, layer: i });
       }

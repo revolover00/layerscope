@@ -29,6 +29,9 @@
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* [hidden] must always win over author display rules (UA default beats nothing otherwise) */
+[hidden] { display: none !important; }
+
 html { scroll-behavior: smooth; }
 
 body {
