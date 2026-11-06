@@ -44,7 +44,8 @@ jobs:
           docker export "$cid" -o /tmp/python-rootfs.tar
           docker rm "$cid"
           ls -la /tmp/python-rootfs.tar
-          node tools/ci/build-zstd-oci.mjs --rootfs /tmp/python-rootfs.tar --out /tmp/bench/python-rootfs-zstd.tar --tag python:3.12-slim
+          node tools/ci/build-zstd-oci.mjs --rootfs /tmp/python-rootfs.tar --out /tmp/bench/python-rootfs-zstd.tar --tag python:3.12-slim > /tmp/python-zstd.json
+          node -e "const j=require('/tmp/python-zstd.json'); console.log('::notice::python-rootfs-zstd uncompressedLayerBytes=' + j.uncompressedLayerBytes + ' zstdLayerBytes=' + j.zstdLayerBytes + ' archiveBytes=' + j.archiveBytes + ' ratio=' + j.ratio)"
           ls -la /tmp/bench
 
       - name: Install Chromium (playwright-core)
