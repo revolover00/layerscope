@@ -90,11 +90,21 @@ const fingerprint = async () => page.evaluate(() => {
   });
 });
 
-const waitForAnalysis = () => page.waitForFunction(() => {
-  const a = document.getElementById('analysis');
-  const o = document.getElementById('progress-overlay');
-  return a && !a.hidden && o && o.hidden;
-}, null, { timeout: 600000, polling: 100 });
+const waitForAnalysis = async (idx) => {
+  const outcome = await Promise.race([
+    page.waitForFunction(() => {
+      const a = document.getElementById('analysis');
+      const o = document.getElementById('progress-overlay');
+      return a && !a.hidden && o && o.hidden;
+    }, null, { timeout: 300000, polling: 100 }).then(() => 'ok'),
+    page.waitForSelector('#error-box', { state: 'visible', timeout: 300000 }).then(() => 'error'),
+  ]);
+  if (outcome === 'error') {
+    const text = await page.$eval('#error-box', (el) => el.textContent.trim());
+    console.log(`::notice::browser-soak-error analysis #${idx} ${image}: ${text}`);
+    throw new Error(`analysis #${idx} failed in the browser for ${image}: ${text}`);
+  }
+};
 
 const fps = [];
 for (let i = 1; i <= ANALYSES; i++) {
@@ -103,7 +113,7 @@ for (let i = 1; i <= ANALYSES; i++) {
     await page.waitForFunction(() => !document.getElementById('landing').hidden, null, { timeout: 30000, polling: 100 });
   }
   await page.setInputFiles('#file-input', image);
-  await waitForAnalysis();
+  await waitForAnalysis(i);
   fps.push(await fingerprint());
 }
 const uniqueFps = new Set(fps);

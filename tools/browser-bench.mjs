@@ -36,11 +36,21 @@ for (const imagePath of images) {
 
   await page.goto(url, { waitUntil: 'load', timeout: 60000 });
 
-  const waitForAnalysis = () => page.waitForFunction(() => {
-    const a = document.getElementById('analysis');
-    const o = document.getElementById('progress-overlay');
-    return a && !a.hidden && o && o.hidden;
-  }, null, { timeout: 600000, polling: 100 });
+  const waitForAnalysis = async () => {
+    const outcome = await Promise.race([
+      page.waitForFunction(() => {
+        const a = document.getElementById('analysis');
+        const o = document.getElementById('progress-overlay');
+        return a && !a.hidden && o && o.hidden;
+      }, null, { timeout: 600000, polling: 100 }).then(() => 'ok'),
+      page.waitForSelector('#error-box', { state: 'visible', timeout: 600000 }).then(() => 'error'),
+    ]);
+    if (outcome === 'error') {
+      const text = await page.$eval('#error-box', (el) => el.textContent.trim());
+      console.log(`::notice::browser-bench-error ${imagePath}: ${text}`);
+      throw new Error(`analysis failed in the browser for ${imagePath}: ${text}`);
+    }
+  };
 
   // ---- cold: first analysis in this page (WASM fetch + compile + init included)
   const coldT0 = Date.now();
