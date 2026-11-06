@@ -181,6 +181,9 @@ function selectLayer(index) {
   $('#ld-index').textContent = `${index + 1} / ${a.layerCount}`;
   $('#ld-command').textContent = layer.command;
   $('#ld-command').title = layer.command;
+  const copyBtn = $('#ld-copy-command');
+  copyBtn.classList.remove('is-done', 'is-fail');
+  copyBtn.querySelector('.copy-btn-label').textContent = 'Copy';
   $('#ld-digest').textContent = layer.digestId || 'digest unavailable (config has no diff_ids)';
   $('#ld-size').textContent = formatBytes(layer.sizeBytes);
   $('#ld-blob').textContent = formatBytes(layer.compressedBytes);
@@ -349,6 +352,39 @@ function activateTab(tabId) {
 function init() {
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+// Clipboard access with a non-secure-context fallback (file://, older WebViews).
+async function copyToClipboard(text) {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch { /* fall through */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+$('#ld-copy-command').addEventListener('click', async () => {
+  const btn = $('#ld-copy-command');
+  const label = btn.querySelector('.copy-btn-label');
+  const text = $('#ld-command').textContent;
+  const ok = await copyToClipboard(text);
+  btn.classList.toggle('is-done', ok);
+  btn.classList.toggle('is-fail', !ok);
+  label.textContent = ok ? 'Copied!' : 'Ctrl+C';
+  window.setTimeout(() => {
+    btn.classList.remove('is-done', 'is-fail');
+    label.textContent = 'Copy';
+  }, 1600);
+});
 
 $('#browse-btn').addEventListener('click', (e) => { e.stopPropagation(); $('#file-input').click(); });
 $('#file-input').addEventListener('change', () => {
