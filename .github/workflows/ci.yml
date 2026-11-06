@@ -22,6 +22,9 @@ jobs:
       - name: Smoke test the UI (jsdom)
         run: npm run smoke
 
+      - name: Decoder soak (2000× decompress sha256-verified + 50 analyses)
+        run: node tools/soak-zstd.mjs --iterations 2000 --analyses 50
+
       - name: Verify layerscope against dive's committed golden files
         run: |
           git clone --depth 1 https://github.com/wagoodman/dive /tmp/dive-src

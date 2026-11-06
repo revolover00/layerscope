@@ -10,6 +10,7 @@ import zlib from 'node:zlib';
 
 import { synthesize } from '../tools/synth.mjs';
 import { buildFixtureAsync, buildMultiManifestFixture } from '../tools/fixtures.mjs';
+import { tarballOf } from '../tools/synth-lib.mjs';
 
 class MemBlob {
   constructor(buf) { this.buf = buf; this.size = buf.length; }
@@ -163,4 +164,91 @@ test('multi-manifest OCI index: unknown platform falls back to the default with 
   const a = await analyzeImage(new MemBlob(buf), { platform: 'linux/s390x' });
   assert.equal(a.selectedPlatform, 'linux/amd64');
   assert.ok(a.warnings.some((w) => /not present/.test(w)), `fallback warning present: ${a.warnings.join(' | ')}`);
+});
+
+test('zstd fallback limit: layer above maxLayerBytes fails with a clear, actionable error', async () => {
+  const buf = await buildFixtureAsync('oci-save-zstd'); // small but real zstd layer
+  await assert.rejects(
+    () => analyzeImage(new MemBlob(buf), { maxLayerBytes: 1 }),
+    (err) => {
+      assert.match(err.message, /exceeding the 0 MiB \(1 bytes\) fallback limit/);
+      assert.match(err.message, /gzip/); // tells the user the streaming alternative
+      return true;
+    },
+  );
+});
+
+test('zstd fallback limit: layer under a generous maxLayerBytes passes', async () => {
+  const buf = await buildFixtureAsync('oci-save-zstd');
+  const a = await analyzeImage(new MemBlob(buf), { maxLayerBytes: 512 * 1024 * 1024 });
+  assert.equal(a.layerCount, 3);
+});
+
+
+// ---- archive surgery helpers (the outer tar is uncompressed; ustar) --------
+function splitOuterTar(buf) {
+  const files = new Map();
+  let off = 0;
+  while (off + 512 <= buf.length) {
+    const h = buf.subarray(off, off + 512);
+    if (h.every((b) => b === 0)) break;
+    let name = h.subarray(0, 100).toString('utf8').replace(/\0.*$/s, '');
+    const prefix = h.subarray(345, 500).toString('utf8').replace(/\0.*$/s, '');
+    if (prefix) name = prefix + '/' + name;
+    const sizeOct = h.subarray(124, 136).toString('ascii').replace(/\0.*$/s, '').trim();
+    const size = sizeOct ? parseInt(sizeOct, 8) : 0;
+    files.set(name, Buffer.from(buf.subarray(off + 512, off + 512 + size)));
+    off += 512 + Math.ceil(size / 512) * 512;
+  }
+  return files;
+}
+
+function joinOuterTar(files) {
+  return tarballOf([...files.entries()].map(([name, data]) => ({ name, data })));
+}
+
+test('zstd fallback limit: refuses BEFORE allocating when the zstd frame FCS is above the limit', async () => {
+  const buf = await buildFixtureAsync('oci-save-zstd'); // frames carry a content size
+  await assert.rejects(
+    () => analyzeImage(new MemBlob(buf), { maxLayerBytes: 1 }),
+    (err) => {
+      assert.match(err.message, /refusing to decode before allocating/);
+      assert.match(err.message, /fallback limit/);
+      return true;
+    },
+  );
+});
+
+test('integrity check: a zstd layer that does not match rootfs.diff_ids fails with a clear error', async () => {
+  const buf = await buildFixtureAsync('oci-save-zstd');
+  const files = splitOuterTar(buf);
+  // find the root-level config (legacy docker-save path: <digest>.json)
+  const cfgName = JSON.parse(files.get('manifest.json').toString('utf8'))[0].Config;
+  const cfg = JSON.parse(files.get(cfgName).toString('utf8'));
+  assert.ok(Array.isArray(cfg.rootfs?.diff_ids) && cfg.rootfs.diff_ids.length > 0, 'fixture config has diff_ids');
+  cfg.rootfs.diff_ids[0] = 'sha256:' + 'a'.repeat(64); // lie about layer 1's uncompressed digest
+  files.set(cfgName, Buffer.from(JSON.stringify(cfg, null, 2)));
+  const tampered = joinOuterTar(files);
+  await assert.rejects(
+    () => analyzeImage(new MemBlob(tampered)),
+    (err) => {
+      assert.match(err.message, /Integrity check failed/);
+      assert.match(err.message, /rootfs\.diff_ids/);
+      assert.match(err.message, /layer 1\/3/);
+      return true;
+    },
+  );
+});
+
+test('integrity check: a config without rootfs.diff_ids yields a warning, not a failure', async () => {
+  const buf = await buildFixtureAsync('oci-save-zstd');
+  const files = splitOuterTar(buf);
+  const cfgName = JSON.parse(files.get('manifest.json').toString('utf8'))[0].Config;
+  const cfg = JSON.parse(files.get(cfgName).toString('utf8'));
+  delete cfg.rootfs; // no expectations — analysis must proceed with a visible warning
+  files.set(cfgName, Buffer.from(JSON.stringify(cfg, null, 2)));
+  const tampered = joinOuterTar(files);
+  const a = await analyzeImage(new MemBlob(tampered));
+  assert.equal(a.layerCount, 3);
+  assert.ok(a.warnings.some((w) => /diff_ids/.test(w) && /NOT verified/.test(w)), `warning present: ${a.warnings.join(' | ')}`);
 });

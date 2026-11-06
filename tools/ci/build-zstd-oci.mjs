@@ -30,11 +30,13 @@ if (!rootfsPath || !outPath) {
 const rootfs = readFileSync(rootfsPath);
 const diffId = sha256(rootfs);
 
-const { createRequire } = await import('node:module');
-const require = createRequire(import.meta.url);
-const wasm = require('@bokuweb/zstd-wasm');
-await wasm.init();
-const layerZst = Buffer.from(wasm.compress(rootfs, level));
+// node's native zstd (node >= 22.15) — required for zstd fixture synthesis.
+const zlib = await import('node:zlib');
+if (typeof zlib.zstdCompressSync !== 'function') {
+  console.error('zstd fixture synthesis requires node >= 22.15 (native zlib zstd)');
+  process.exit(2);
+}
+const layerZst = zlib.zstdCompressSync(rootfs, { params: { [zlib.constants.ZSTD_c_compressionLevel]: level } });
 const layerDigest = sha256(layerZst);
 
 const MTIME = Math.floor(Date.now() / 1000);
