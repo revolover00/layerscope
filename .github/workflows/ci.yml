@@ -48,12 +48,17 @@ jobs:
           chmod +x /tmp/dive
           /tmp/dive --version
 
-      - name: Analyze archives with dive
+      - name: Analyze images with dive (docker daemon)
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           mkdir -p /tmp/out
+          # Load the exact archives produced by `docker save` into the daemon,
+          # then analyze with dive's canonical source (docker daemon).
           for name in clean add-delete overwrite multi-waste; do
-            /tmp/dive --json "/tmp/out/${name}.dive.json" "docker-archive:/tmp/samples/${name}.tar"
+            docker load -i "/tmp/samples/${name}.tar"
+          done
+          for name in clean add-delete overwrite multi-waste; do
+            /tmp/dive --json "/tmp/out/${name}.dive.json" "layerscope-samples/${name}"
           done
 
       - name: Analyze archives with layerscope
@@ -73,7 +78,7 @@ jobs:
           done
 
       - name: dive --ci passes on the clean sample
-        run: /tmp/dive --ci "docker-archive:/tmp/samples/clean.tar"
+        run: /tmp/dive --ci layerscope-samples/clean
 
       - name: dive --ci rejects the wasteful samples (expected)
         run: |
@@ -81,7 +86,7 @@ jobs:
           # These three samples are wasteful by design, so dive exits non-zero.
           # This step never fails the build; it only reports dive's verdict.
           for name in add-delete overwrite multi-waste; do
-            if /tmp/dive --ci "docker-archive:/tmp/samples/${name}.tar"; then
+            if /tmp/dive --ci "layerscope-samples/${name}"; then
               echo "::warning::dive --ci unexpectedly passed on ${name} (alpine base may have changed sizes)"
             else
               echo "dive --ci rejected ${name} as expected"

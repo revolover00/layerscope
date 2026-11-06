@@ -29,9 +29,12 @@ for name in $SAMPLES; do
 done
 
 if [ -n "${DIVE:-}" ] && [ -x "${DIVE}" ]; then
-  echo "==> analyzing with dive (${DIVE})"
+  echo "==> analyzing with dive (${DIVE}) via the docker daemon"
   for name in $SAMPLES; do
-    "${DIVE}" --json "${OUT_DIR}/out/${name}.dive.json" "docker-archive:${WORK}/${name}.tar"
+    docker load -i "${WORK}/${name}.tar" >/dev/null
+  done
+  for name in $SAMPLES; do
+    "${DIVE}" --json "${OUT_DIR}/out/${name}.dive.json" "layerscope-samples/${name}"
   done
 
   echo "==> comparing layerscope vs dive"
@@ -42,14 +45,14 @@ if [ -n "${DIVE:-}" ] && [ -x "${DIVE}" ]; then
   done
 
   echo "==> dive --ci (default rules: lowestEfficiency=0.9, highestUserWastedPercent=0.1)"
-  if "${DIVE}" --ci "docker-archive:${WORK}/clean.tar"; then
+  if "${DIVE}" --ci layerscope-samples/clean; then
     echo "    clean: PASS (expected)"
   else
     echo "    clean: FAIL (unexpected — investigate)"
     failed=1
   fi
   for name in add-delete overwrite multi-waste; do
-    if "${DIVE}" --ci "docker-archive:${WORK}/${name}.tar"; then
+    if "${DIVE}" --ci "layerscope-samples/${name}"; then
       echo "    ${name}: unexpectedly passed default CI rules"
     else
       echo "    ${name}: rejected by default CI rules (expected — wasteful by design)"
