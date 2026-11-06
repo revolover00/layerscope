@@ -85,7 +85,7 @@ for (const imagePath of images) {
   console.log(JSON.stringify(result));
   // Surface the headline numbers as a check-run annotation so they are visible
   // without log access (job logs may be permission-gated).
-  console.log(`::notice::browser-bench ${imagePath} bytes=${result.bytes} cold=${coldMs}ms warm=${warmMs}ms heurHeapMB_afterCold=${result.chromiumJsHeapMB_afterCold} gauge=${result.gauge} chips=${result.chipLayers} consoleErrors=${consoleErrors.length}`);
+  console.log(`::notice::browser-bench ${imagePath} bytes=${result.bytes} cold=${coldMs}ms warm=${warmMs}ms jsHeapMB_afterCold=${result.chromiumJsHeapMB_afterCold} jsHeapMB_afterWarm=${result.chromiumJsHeapMB_afterWarm} gauge=${result.gauge} chips=${result.chipLayers} consoleErrors=${consoleErrors.length}`);
   await page.close();
 }
 
