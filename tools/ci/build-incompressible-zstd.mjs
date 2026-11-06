@@ -8,11 +8,23 @@ import { synthesizeRawAsync, randomContent } from '../synth-lib.mjs';
 
 const outIdx = process.argv.indexOf('--out');
 const out = outIdx >= 0 ? process.argv[outIdx + 1] : '/tmp/bench64-zstd.tar';
+// optional geometry overrides (defaults preserve the historical fixture)
+const opt = (name) => {
+  const i = process.argv.indexOf(`--${name}`);
+  return i >= 0 ? Number(process.argv[i + 1]) : null;
+};
+const layerCount = opt('layers') ?? 6;
+const perOverride = opt('per-mib'); // MiB per layer
+const sizeOption = opt('size-mib'); // total MiB (ignored when per-mib is set)
 
 const layers = [];
 const history = [];
-const per = Math.floor((62 * 1024 * 1024) / 6);
-for (let i = 0; i < 6; i++) {
+const per = perOverride
+  ? Math.floor(perOverride * 1024 * 1024)
+  : sizeOption
+    ? Math.floor((sizeOption * 1024 * 1024) / layerCount)
+    : Math.floor((62 * 1024 * 1024) / 6);
+for (let i = 0; i < layerCount; i++) {
   const entries = [{ name: `data/big-${i}.bin`, content: randomContent(per, 1234 + i), mode: 0o644 }];
   if (i === 1 || i === 4) entries.push({ name: 'meta/marker.txt', content: Buffer.alloc(68, 65), mode: 0o644 });
   layers.push(entries);
@@ -20,4 +32,4 @@ for (let i = 0; i < 6; i++) {
 }
 const buf = await synthesizeRawAsync({ format: 'oci-save', compression: 'zstd', layers, history, repoTag: 'layerscope/bench64:latest' });
 writeFileSync(out, buf);
-console.log(JSON.stringify({ out, layers: 6, bytes: buf.length, uncompressedBytes: layers.flat().reduce((a, e) => a + e.content.length, 0) }));
+console.log(JSON.stringify({ out, layers: layerCount, perLayerBytes: per, bytes: buf.length, uncompressedBytes: layers.flat().reduce((a, e) => a + e.content.length, 0) }));
