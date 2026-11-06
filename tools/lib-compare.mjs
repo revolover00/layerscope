@@ -107,8 +107,10 @@ export function compareAnalyses(dive, scope) {
   }
   // 2) Within each maximal contiguous run of equal sizeBytes, compare the
   //    multiset of (file, count) pairs — content must still match exactly.
+  //    Skipped when the sequence check already failed: comparing
+  //    misaligned groups would only add noise to an already-decisive failure.
   let tieDiffs = 0;
-  for (let i0 = 0; i0 < n;) {
+  for (let i0 = 0; sequenceDiff === -1 && i0 < n;) {
     let i1 = i0 + 1;
     while (i1 < n && Number(dRef[i1].sizeBytes) === Number(dRef[i0].sizeBytes)) i1++;
     const pairKey = (e) => `${e.file}|${Number(e.count)}`;
