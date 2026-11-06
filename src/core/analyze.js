@@ -289,16 +289,17 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
   const finalEntries = new TopK(topLimit, (a, b) => b.size - a.size || (a.path < b.path ? -1 : 1));
 
 
-  const recordOccurrence = (path, size) => {
+  const recordOccurrence = (path, size, deleted = false) => {
     let s = pathStats.get(path);
     if (!s) {
-      s = { count: 0, cumulative: 0, min: Infinity };
+      s = { count: 0, cumulative: 0, min: Infinity, last: null };
       pathStats.set(path, s);
       pathOrder.push(path);
     }
     s.count += 1;
     s.cumulative += size;
     if (size < s.min) s.min = size;
+    s.last = { size, deleted };
   };
 
   for (let i = 0; i < layerCount; i++) {
@@ -474,6 +475,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
   // ---------------- efficiency score ----------------
   let minimum = 0;
   let discovered = 0;
+  let reclaimableBytes = 0;
   const inefficiencies = [];
   for (const path of pathOrder) {
     const s = pathStats.get(path);
@@ -481,6 +483,11 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     discovered += s.cumulative;
     if (s.count > 1) {
       inefficiencies.push({ path, count: s.count, sizeBytes: s.cumulative });
+      // The surviving copy is the payload that remains in the final squashed
+      // image: the last occurrence, unless it is a deletion marker (whiteout /
+      // opaque dir), in which case nothing of this path survives.
+      const surviving = s.last && !s.last.deleted ? s.last.size : 0;
+      reclaimableBytes += s.cumulative - surviving;
     }
   }
   inefficiencies.sort((a, b) => b.sizeBytes - a.sizeBytes || (a.path < b.path ? -1 : 1));
@@ -500,6 +507,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     totalSizeBytes,
     userSizeBytes,
     wastedBytes,
+    reclaimableBytes,
     wastedUserPercent,
     efficiency,
     inefficiencies,
