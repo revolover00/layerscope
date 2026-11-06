@@ -1,0 +1,21 @@
+{
+  "name": "layerscope",
+  "version": "0.1.0",
+  "description": "Browser-only Docker image inspector. No backend, no uploads.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test",
+    "synth": "node tools/synth.mjs --all",
+    "analyze": "node tools/analyze.mjs",
+    "compare": "node tools/compare.mjs",
+    "verify": "node tools/verify-fixtures.mjs",
+    "smoke": "node tools/smoke-ui.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "jsdom": "^31.0.0"
+  }
+}
