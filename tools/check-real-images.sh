@@ -22,9 +22,28 @@ mkdir -p "$WORK" "$OUT/out"
 
 tag_of() { echo "$1" | tr '/:' '__'; }
 
+# Docker Hub anonymous pulls from shared CI runners are often rate-limited;
+# mirror.gcr.io serves the same official-image namespace, so we try it first
+# and fall back to docker.io, with one retry per registry. Images are always
+# tagged back to their canonical name before saving.
+pull_one() {
+  local img="$1"
+  for attempt in 1 2; do
+    if docker pull "mirror.gcr.io/library/$img"; then
+      docker tag "mirror.gcr.io/library/$img" "$img"
+      return 0
+    fi
+    echo "mirror.gcr.io pull failed for $img (attempt $attempt) — falling back to docker.io"
+    if docker pull "$img"; then return 0; fi
+    sleep 5
+  done
+  echo "::error::could not pull $img from mirror.gcr.io or docker.io"
+  return 1
+}
+
 echo "==> pulling images ($(echo $IMAGES | wc -w))"
 for img in $IMAGES; do
-  docker pull "$img" || { echo "pull failed: $img"; exit 1; }
+  pull_one "$img" || exit 1
 done
 
 echo "==> docker save"
@@ -49,14 +68,15 @@ done
 
 echo "==> compare (tools/lib-compare.mjs; efficiencyScore rel tol 1e-9, everything else exact; all diffs are printed)"
 failed=0
+: > "$OUT/compare.log"
 for img in $IMAGES; do
   tag="$(tag_of "$img")"
-  echo ""
-  echo "==================== $img ===================="
-  if node tools/compare.mjs "$OUT/out/${tag}.dive.json" "$OUT/out/${tag}.layerscope.json"; then
-    echo "RESULT $img: match"
+  echo "" | tee -a "$OUT/compare.log"
+  echo "==================== $img ====================" | tee -a "$OUT/compare.log"
+  if node tools/compare.mjs "$OUT/out/${tag}.dive.json" "$OUT/out/${tag}.layerscope.json" 2>&1 | tee -a "$OUT/compare.log"; then
+    echo "RESULT $img: match" | tee -a "$OUT/compare.log"
   else
-    echo "RESULT $img: MISMATCH (see diffs above)"
+    echo "RESULT $img: MISMATCH (see diffs above)" | tee -a "$OUT/compare.log"
     failed=1
   fi
 done
