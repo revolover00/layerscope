@@ -372,19 +372,21 @@ async function copyToClipboard(text) {
   }
 }
 
-$('#ld-copy-command').addEventListener('click', async () => {
-  const btn = $('#ld-copy-command');
+function wireCopyButton(btn, textFn) {
   const label = btn.querySelector('.copy-btn-label');
-  const text = $('#ld-command').textContent;
-  const ok = await copyToClipboard(text);
-  btn.classList.toggle('is-done', ok);
-  btn.classList.toggle('is-fail', !ok);
-  label.textContent = ok ? 'Copied!' : 'Ctrl+C';
-  window.setTimeout(() => {
-    btn.classList.remove('is-done', 'is-fail');
-    label.textContent = 'Copy';
-  }, 1600);
-});
+  btn.addEventListener('click', async () => {
+    const ok = await copyToClipboard(textFn());
+    btn.classList.toggle('is-done', ok);
+    btn.classList.toggle('is-fail', !ok);
+    label.textContent = ok ? 'Copied!' : 'Ctrl+C';
+    window.setTimeout(() => {
+      btn.classList.remove('is-done', 'is-fail');
+      label.textContent = 'Copy';
+    }, 1600);
+  });
+}
+wireCopyButton($('#ld-copy-command'), () => $('#ld-command').textContent);
+wireCopyButton($('#hero-cmd-copy'), () => $('#hero-cmd').textContent);
 
 $('#browse-btn').addEventListener('click', (e) => { e.stopPropagation(); $('#file-input').click(); });
 $('#file-input').addEventListener('change', () => {

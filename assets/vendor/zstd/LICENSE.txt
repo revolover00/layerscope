@@ -1,0 +1,21 @@
+zstd-wasm (vendored build from the npm package)
+===============================================
+
+name:        @bokuweb/zstd-wasm
+version:     0.0.27
+source:      https://github.com/bokuweb/zstd-wasm
+license:     MIT
+copyright:   bokuweb (the npm package and the JavaScript glue)
+
+The JavaScript/WebAssembly port embeds Facebook's zstd library
+(https://github.com/facebook/zstd — BSD dual-licensed, see its LICENSE)
+compiled with Emscripten. The .wasm binary and the JS glue in this
+directory are copied verbatim from the published npm package
+"@bokuweb/zstd-wasm@0.0.27" (dist/esm) with exactly one mechanical change:
+relative import specifiers gained explicit ".js" extensions so the files
+load as native browser ES modules (no logic, names, or values changed).
+
+Vendored for use by layerscope (MIT) so browsers whose
+DecompressionStream lacks 'zstd' can still read zstd-compressed
+image layers locally, with no network fetch beyond the app's own
+static assets.
