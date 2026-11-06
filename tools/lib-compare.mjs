@@ -11,10 +11,11 @@
 // /var/lib/dpkg/triggers/Unincorp, /var/lib/dpkg/lock) whose relative order is
 // not defined by dive. dive main added "ties by path" (dive/analysis.go).
 // layerscope follows dive main (size desc, path asc). Tolerances are NOT
-// relaxed: every entry must still match EXACTLY on (file, count, sizeBytes),
-// compared as a multiset within equal-(sizeBytes,count) groups; group blocks
-// and content must match one-to-one. Only dive v0.13.1's undefined intra-tie
-// order is normalized away. All other checks remain fully positional/exact.
+// relaxed: the sizeBytes SEQUENCE must be EXACTLY equal to dive's (any
+// divergence fails), and entries within each maximal contiguous run of equal
+// sizeBytes may permute freely — there the (file, count) multiset must match
+// exactly. Only dive v0.13.1's undefined intra-tie order is normalized away.
+// All other checks remain fully positional/exact.
 
 const EPS = 1e-9;
 
@@ -93,28 +94,43 @@ export function compareAnalyses(dive, scope) {
   if (dRef.length !== sRef.length) {
     fail(`fileReference length differs: dive=${dRef.length} layerscope=${sRef.length}`);
   }
-  // Multiset comparison of exact (file, count, sizeBytes) triples. dive v0.13.1
-  // defines no order within equal-cumulative-size groups (see file header), so a
-  // positional diff of 0-byte ties is not meaningful. Content must match exactly.
-  const tripleKey = (e) => `${e.file}|${Number(e.count)}|${Number(e.sizeBytes)}`;
-  const dMap = new Map();
-  for (const e of dRef) dMap.set(tripleKey(e), (dMap.get(tripleKey(e)) || 0) + 1);
-  const sMap = new Map();
-  for (const e of sRef) sMap.set(tripleKey(e), (sMap.get(tripleKey(e)) || 0) + 1);
-  const allTriples = new Set([...dMap.keys(), ...sMap.keys()]);
-  let refDiffs = 0;
-  for (const k of allTriples) {
-    const dc = dMap.get(k) || 0;
-    const sc = sMap.get(k) || 0;
-    if (dc !== sc) {
-      refDiffs++;
-      if (refDiffs <= 10) fail(`fileReference entry ${dc}x (dive) vs ${sc}x (ours): ${k}`);
-    }
+  const n = Math.min(dRef.length, sRef.length);
+  // 1) The sizeBytes SEQUENCE must match dive exactly — any divergence at any
+  //    position fails, regardless of file/count. Only entries within groups of
+  //    equal sizeBytes are allowed to permute.
+  let sequenceDiff = -1;
+  for (let i = 0; i < n; i++) {
+    if (Number(dRef[i].sizeBytes) !== Number(sRef[i].sizeBytes)) { sequenceDiff = i; break; }
   }
-  if (refDiffs === 0 && dRef.length === sRef.length) {
-    note(`fileReference ${dRef.length} entries identical (multiset; dive v0.13.1 intra-tie order undefined)`);
-  } else if (refDiffs > 0) {
-    fail(`fileReference: ${refDiffs} differing entries`);
+  if (sequenceDiff >= 0) {
+    fail(`fileReference sizeBytes sequence diverges at index ${sequenceDiff}: dive=${dRef[sequenceDiff].sizeBytes} ours=${sRef[sequenceDiff].sizeBytes} (sizeBytes order must match dive exactly; only equal-size entries may permute)`);
+  }
+  // 2) Within each maximal contiguous run of equal sizeBytes, compare the
+  //    multiset of (file, count) pairs — content must still match exactly.
+  let tieDiffs = 0;
+  for (let i0 = 0; i0 < n;) {
+    let i1 = i0 + 1;
+    while (i1 < n && Number(dRef[i1].sizeBytes) === Number(dRef[i0].sizeBytes)) i1++;
+    const pairKey = (e) => `${e.file}|${Number(e.count)}`;
+    const dMap = new Map();
+    for (const e of dRef.slice(i0, i1)) dMap.set(pairKey(e), (dMap.get(pairKey(e)) || 0) + 1);
+    const sMap = new Map();
+    for (const e of sRef.slice(i0, i1)) sMap.set(pairKey(e), (sMap.get(pairKey(e)) || 0) + 1);
+    const keys = new Set([...dMap.keys(), ...sMap.keys()]);
+    for (const k of keys) {
+      const dc = dMap.get(k) || 0;
+      const sc = sMap.get(k) || 0;
+      if (dc !== sc) {
+        tieDiffs++;
+        if (tieDiffs <= 10) fail(`fileReference[${i0}..${i1 - 1}] (sizeBytes=${dRef[i0].sizeBytes}) entry ${dc}x (dive) vs ${sc}x (ours): ${k}`);
+      }
+    }
+    i0 = i1;
+  }
+  if (sequenceDiff === -1 && tieDiffs === 0 && dRef.length === sRef.length) {
+    note(`fileReference ${dRef.length} entries identical (sizeBytes sequence exact; entries within equal-size groups compared as multiset — dive v0.13.1 intra-tie order undefined)`);
+  } else if (tieDiffs > 0) {
+    fail(`fileReference: ${tieDiffs} differing entries within equal-size groups`);
   }
 
   return { failures, lines };
