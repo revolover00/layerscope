@@ -69,6 +69,13 @@ async function layerStream(blob, offset, size, compression) {
   });
 }
 
+/** Human label for a manifest: accepts an index descriptor ({platform:{...}}) or a flat {os, architecture, variant} entry. */
+export function formatPlatform(m) {
+  const p = (m && (m.platform || m)) || null;
+  if (!p || !p.os || !p.architecture) return null;
+  return `${p.os}/${p.architecture}${p.variant ? `/${p.variant}` : ''}`;
+}
+
 /** Strip the conventional docker exec wrapper dive strips. */
 export function trimCommand(createdBy) {
   if (!createdBy) return '(missing)';
@@ -88,7 +95,7 @@ function alignHistory(history, layerCount) {
   return commands;
 }
 
-export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 } = {}) {
+export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20, platform = null } = {}) {
   const warnings = [];
   const progress = (phase, detail) => onProgress({ phase, ...(detail || {}) });
 
@@ -146,6 +153,8 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
   let diffIds = [];
   let history = null;
   let configRaw = null;
+  let platformsMeta = null;   // multi-manifest OCI: all descriptors (null otherwise)
+  let selectedPlatform = null;
 
   if (index.has('manifest.json')) {
     const manifest = readJson('manifest.json');
@@ -164,18 +173,36 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
     const idx = readJson('index.json');
     const manifests = idx.manifests || [];
     if (manifests.length === 0) throw new Error('index.json lists no manifests');
-    let chosen = manifests[0];
-    if (manifests.length > 1) {
-      const amd64 = manifests.find((m) => {
-        const a = m.annotations || {};
-        return (a['io.containerd.image.name'] || '').includes('amd64') || false;
+    const platOf = (m) => m.platform || null;
+    const platforms = manifests.map((m) => {
+      const p = platOf(m) || {};
+      return { os: p.os || 'unknown', architecture: p.architecture || 'unknown', variant: p.variant || null, digest: m.digest, size: m.size || 0 };
+    });
+    const defaultIndex = (() => {
+      const linuxAmd64 = manifests.findIndex((m) => (platOf(m) || {}).os === 'linux' && (platOf(m) || {}).architecture === 'amd64');
+      return linuxAmd64 >= 0 ? linuxAmd64 : 0;
+    })();
+    let chosenIndex = defaultIndex;
+    if (platform) {
+      const [wantOs, wantArch, wantVariant] = String(platform).split('/');
+      const found = manifests.findIndex((m) => {
+        const p = platOf(m) || {};
+        if (p.os !== wantOs || p.architecture !== wantArch) return false;
+        if (wantVariant && p.variant) return p.variant === wantVariant;
+        return true;
       });
-      if (amd64) chosen = amd64;
-      warnings.push(`index.json lists ${manifests.length} manifests; analyzing the first${chosen === amd64 ? ' (linux/amd64 annotation matched)' : ''}`);
-      imageName = chosen.annotations && (chosen.annotations['io.containerd.image.name'] || chosen.annotations['org.opencontainers.image.ref.name'] || null);
-    } else {
-      imageName = chosen.annotations && (chosen.annotations['io.containerd.image.name'] || chosen.annotations['org.opencontainers.image.ref.name'] || null);
+      if (found >= 0) chosenIndex = found;
+      else warnings.push(`requested platform ${platform} not present in index; analyzed ${formatPlatform(manifests[chosenIndex]) || 'the default manifest'} instead`);
     }
+    const chosen = manifests[chosenIndex];
+    const chosenPlatform = formatPlatform(chosen);
+    platformsMeta = platforms.map((p, i) => ({ ...p, selected: i === chosenIndex }));
+    selectedPlatform = chosenPlatform || null;
+    if (manifests.length > 1) {
+      const list = platforms.map((p, i) => `${p.os}/${p.architecture}${p.variant ? `/${p.variant}` : ''}${i === chosenIndex ? ' ✓' : ''}`).join(', ');
+      warnings.push(`index.json lists ${manifests.length} manifests across platforms (${list}); analyzed ${chosenPlatform || 'manifest #' + chosenIndex}`);
+    }
+    imageName = chosen.annotations && (chosen.annotations['io.containerd.image.name'] || chosen.annotations['org.opencontainers.image.ref.name'] || null);
     const manifestRel = chosen.digest.replace(/^sha256:/, 'blobs/sha256/');
     const manifest = await readJsonAt(manifestRel);
     const configRel = manifest.config.digest.replace(/^sha256:/, 'blobs/sha256/');
@@ -411,5 +438,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
     topLayerEntries: allLargestEntries.result(),
     topFinalFiles: finalEntries.result(),
     compressedArchiveBytes: blob.size,
+    platforms: platformsMeta,       // null for legacy docker-save archives
+    selectedPlatform,
   };
 }
