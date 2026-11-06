@@ -58,7 +58,11 @@ python3 -m http.server 8080        # or: npx serve .
 - **File contents are never read** — everything is computed from tar headers
 - **Large files** are handled by streaming the archive in slices (`Blob.slice`)
   through `DecompressionStream`; the outer archive is never loaded whole into
-  memory, and memory grows with the number of file entries, not with byte size
+  memory. Memory scales with the **largest single layer**, not with the archive's
+  total size or file count: gzip layers and native-zstd layers stream end-to-end,
+  while the WASM zstd fallback holds one layer in memory at a time and its
+  linear memory never shrinks afterwards (measured — see the memory bench
+  section below)
 - **UI:** filterable layer diff lists, wasted-space table with per-path copy counts, efficiency gauge, one-click copy of the creating command, keyboard-accessible dropzone, self-hosted Geist fonts (no CDN)
 
 ## What does not work (honestly)
@@ -68,6 +72,14 @@ python3 -m http.server 8080        # or: npx serve .
   message says exactly that. The WASM fallback holds one layer in memory — gzip
   layers remain fully streaming. Legacy `docker save` archives do not carry zstd
   layers; `oci-save` zstd is the supported layout.
+- **The WASM zstd fallback refuses single layers larger than 512 MiB.** The decoder
+  must hold one decompressed layer in linear memory; a layer above the limit fails
+  with a clear error naming the layer, its decompressed size and the limit,
+  instead of a crash (gzip layers stream end-to-end and are unaffected). Callers
+  of `analyzeImage()` can raise or lower the limit with the `maxLayerBytes`
+  option (default 512 MiB). The tested maximum — the largest single zstd layer
+  analyzed end-to-end in a real browser — is documented with the measured
+  numbers in the benchmark section below.
 - **`.tar.gz` / `.tar.zst` of a docker-archive is not supported.** `docker save`
   emits an uncompressed `.tar` already; layerscope expects exactly that and
   detects the outer gzip/zstd magic bytes to say so instead of failing with the
@@ -296,6 +308,23 @@ fresh process, WASM module cold, peak sampled inside `onProgress`):
 - `rss` 45.7 → 107.9 MB after file load → 219–226 MB during analysis → 181–220 MB after GC (+73 to +112 MB over before analysis)
 - `heapUsed` delta ≤ +0.8 MB — reporting heapUsed alone would miss ~120 MB of RSS growth
 - the outer archive Buffer accounts for the rest; file bytes are never retained after analysis
+
+Memory scaling measured on the same fallback path — two zstd archives with the
+**same 120 MiB of uncompressed layer data** (incompressible random content,
+`node --expose-gc tools/bench-memory.mjs`, fresh process, peak RSS sampled
+inside `onProgress`):
+
+| archive                               | layers | rss peak (max sampled) | rss Δ during analysis | arrayBuffers after GC | elapsed |
+|---------------------------------------|--------|------------------------|-----------------------|-----------------------|---------|
+| 1 layer × 120 MiB (`/tmp/zstd-1x120.tar`, 120.0 MB) | 1      | **665.9 MB**           | +500.8 MB             | 240.0 MB (+120 MB retained: grown WASM linear memory) | 601 ms |
+| 12 layers × 10 MiB (`/tmp/zstd-12x10.tar`, 120.0 MB) | 12   | **295.4 MB**           | +100.4 MB             | 120.0 MB (+0.0 MB)     | 276 ms |
+
+So layers ARE analyzed one at a time; peak memory grows with the **largest
+single layer**, not with the number of layers and not with total size. What the
+WASM fallback cannot avoid: the one-shot decode materializes the whole layer in
+linear memory, and WASM linear memory never shrinks — a 120 MiB single layer
+leaves ~120 MB of grown WASM memory behind even after GC. gzip layers have
+neither caveat.
 
 Browser timings will differ; the bundled sample is 92 KiB and analyzes in milliseconds.
 ¹ Synthetic 6-layer OCI-save archive (gzip: `tools/synth-lib.mjs`; zstd:
