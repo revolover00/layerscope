@@ -50,16 +50,17 @@ python3 -m http.server 8080        # or: npx serve .
 - **Large files** are handled by streaming the archive in slices (`Blob.slice`)
   through `DecompressionStream`; the outer archive is never loaded whole into
   memory, and memory grows with the number of file entries, not with byte size
-- **UI:** filterable layer diff lists, wasted-space table with per-path copy
-  counts, efficiency gauge, copyable commands, keyboard-accessible dropzone
+- **UI:** filterable layer diff lists, wasted-space table with per-path copy counts, efficiency gauge, one-click copy of the creating command, keyboard-accessible dropzone
 
 ## What does not work (honestly)
 
 - **zstd-compressed layers are not supported.** Node 22 (and several browsers)
   cannot `DecompressionStream('zstd')`. Re-save with gzip instead. The
   verification suite skips the single zstd fixture — it does not silently pass.
-- **`.tar.gz` of a docker-archive is not supported.** `docker save` emits an
-  uncompressed `.tar` already; layerscope expects exactly that.
+- **`.tar.gz` / `.tar.zst` of a docker-archive is not supported.** `docker save`
+  emits an uncompressed `.tar` already; layerscope expects exactly that and
+  detects the outer gzip/zstd magic bytes to say so instead of failing with the
+  generic "no manifest" error.
 - **OCI indexes with several manifests**: the first manifest is analyzed
   (the `io.containerd.image.name` annotation is used as a weak hint when it
   mentions amd64). A warning is shown; there is no platform picker.
@@ -81,7 +82,7 @@ Numbers below are real output from this repository, not aspirations.
 
 ```
 $ npm test          # node --test
-# tests 12   # pass 12   # fail 0
+# tests 14   # pass 14   # fail 0
 ```
 
 ### layerscope vs. dive's own golden files
@@ -144,15 +145,33 @@ asserting the DOM updates. `npm install && npm run smoke` → `SMOKE TEST PASSED
 ### Browser check (headless Chromium)
 
 Verified by driving a real Chromium (via playwright-core and
-`@sparticuz/chromium`, 1440×900 viewport, against the staged site that
-`pages.yml` deploys). It found a critical bug jsdom could not see:
+`@sparticuz/chromium`, desktop 1440×900 and mobile 390×844, against the staged
+site that `pages.yml` deploys): landing page, invalid-file error path, demo
+analysis, file-path and kind filters, wasted-space filter, top-files scope
+toggle, back-to-landing navigation, and console/page errors — no horizontal
+overflow and no JS errors in any of those views. It found critical bugs jsdom
+could not see:
 
 - **The progress overlay intercepted every pointer event** — the `.overlay`
   rule's `display: flex` overrode the `[hidden]` UA rule, so the "Analyzing…"
   card covered the page even when hidden, making the live site unusable.
   Fixed globally with `[hidden] { display: none !important; }`.
+- **On mobile, the layer table's size-bar column squeezed the command column**
+  — the redundant bar is hidden on ≤640px (the size text is kept) and dense
+  tables now scroll horizontally in a touch-scroll wrapper instead of crushing
+  the path column.
+- **The analysis error was appended at the bottom of the hero, below the
+  fold** — the dropzone and the error sat in different scroll positions, so a
+  failed upload appeared to do nothing. The error box now renders directly
+  below the dropzone.
+- **Creating commands are copyable in the browser** — a Copy button in the
+  layer detail panel writes the exact command to the clipboard (with a
+  non-`navigator.clipboard` fallback for older WebViews).
+- **A gzip- or zstd-wrapped outer archive is rejected with a targeted
+  message** (`docker save … | gzip` produces one) instead of the generic
+  "no manifest.json" error, which reads like the archive is corrupt.
 
-Other fixes from the same pass: deleted-file rows now show the actual
+Other fixes from the same passes: deleted-file rows now show the actual
 lower-layer size ("file · 1.50 MB hidden below"), modified directories render
 as "directory" instead of "0 B → 0 B", whiteout/opaque markers are excluded
 from top-largest-file lists, and extreme user-wasted ratios render grouped
@@ -183,16 +202,18 @@ analyzing with `node tools/analyze.mjs` / in-memory blob (blob already resident)
 
 | archive                                        | size    | layers | result                              | time     |
 |------------------------------------------------|---------|--------|-------------------------------------|----------|
-| synthetic OCI-save, gzip, 6 layers (64 MiB)¹    | 64.0 MB | 6      | eff. 99.9999%, wasted 68 B          | 380–431 ms |
-| add-delete.legacy.tar                          | 2.0 MB  | 3      | eff. 0.00%, wasted 2,097,152 B      | ~3 ms    |
-| add-delete.oci-archive.gzip.tar                | 2.0 MB  | 3      | eff. 0.00%, wasted 2,097,152 B      | ~14 ms   |
-| multi-waste.legacy.tar                         | 2.0 MB  | 3      | eff. 100.00%, wasted 0 B            | ~3 ms    |
-| overwrite.legacy.tar                           | 1.0 MB  | 3      | eff. 50.00%, wasted 1,048,689 B     | ~1 ms    |
+| synthetic OCI-save, gzip, 6 layers (62 MiB)¹    | 62.0 MB | 6      | eff. 99.9999%, wasted 136 B         | 434–471 ms |
+| add-delete.legacy.tar                          | 2.0 MB  | 3      | eff. 0.00%, wasted 2,097,152 B      | ~8 ms    |
+| add-delete.oci-archive.gzip.tar                | 2.0 MB  | 3      | eff. 0.00%, wasted 2,097,152 B      | ~21 ms   |
+| multi-waste.legacy.tar                         | 2.0 MB  | 3      | eff. 100.00%, wasted 0 B            | ~9 ms    |
+| overwrite.legacy.tar                           | 1.0 MB  | 3      | eff. 50.00%, wasted 1,048,689 B     | ~6 ms    |
 
-Heap growth during the 64 MB analysis: ~1.3 MB (streaming; file bytes are never
-retained). Browser timings will differ; the demo image builds in under a second.
-¹ Synthetic image generated with `tools/synth.mjs`; content is random, so gzip
-achieves almost nothing.
+Heap growth during the 62 MB analysis: ~1.2 MiB (measured with
+`--expose-gc`; file bytes are never retained). Browser timings will differ; the demo
+image builds in under a second.
+¹ Synthetic 6-layer OCI-save archive (gzip) generated with `tools/synth-lib.mjs`
+(~10.3 MiB of incompressible random data per layer, plus a 68-byte file duplicated
+across two layers). Content is random, so gzip achieves almost nothing.
 
 ## Repository layout
 
@@ -207,6 +228,7 @@ src/core/analyze.js     archive orchestration + dive-compatible analysis
 src/core/format.js      byte/percent formatting
 tools/                  fixture synth, golden verification, comparison, smoke test
 tests/                  node --test unit tests
+LICENSE                 MIT
 samples/                Dockerfiles used by CI (add-delete, overwrite, multi-waste, clean)
 .github/workflows/ci.yml    unit tests + golden verification + samples vs dive
 .github/workflows/pages.yml static deploy to GitHub Pages
@@ -214,5 +236,4 @@ samples/                Dockerfiles used by CI (add-delete, overwrite, multi-was
 
 ## License
 
-No license file is included yet; treat the code as all-rights-reserved until one
-is added.
+[MIT](LICENSE).

@@ -86,6 +86,20 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
   const warnings = [];
   const progress = (phase, detail) => onProgress({ phase, ...(detail || {}) });
 
+  // ---------------- pass 0: reject gzip/zstd-wrapped outer archives with a targeted message ----------------
+  // `docker save` emits an uncompressed .tar. Wrapping it in .tar.gz / .tar.zst makes the
+  // random-access reads impossible, so fail fast and say exactly what is wrong instead of
+  // the generic 'no manifest' error, which reads like the archive is corrupt.
+  if (blob.size >= 4) {
+    const head = new Uint8Array(await readBlobSlice(blob, 0, 4));
+    if (head[0] === 0x1f && head[1] === 0x8b) {
+      throw new Error('This archive is gzip-compressed (.tar.gz). Unpack it first (gzip -d), or re-run `docker save` without piping through gzip — docker save already emits an uncompressed .tar.');
+    }
+    if (head[0] === 0x28 && head[1] === 0xb5 && head[2] === 0x2f && head[3] === 0xfd) {
+      throw new Error('This archive is zstd-compressed (.tar.zst). Unpack it first (zstd -d), or re-run `docker save` without outer compression.');
+    }
+  }
+
   // ---------------- pass 1: index the outer tar ----------------
   progress('scan', { detail: 'reading archive index' });
   const index = new Map(); // path -> { dataOffset, size }
