@@ -46,6 +46,33 @@ jobs:
           ls -la /tmp/python-rootfs.tar
           node tools/ci/build-zstd-oci.mjs --rootfs /tmp/python-rootfs.tar --out /tmp/bench/python-rootfs-zstd.tar --tag python:3.12-slim > /tmp/python-zstd.json
           node -e "const j=require('/tmp/python-zstd.json'); console.log('::notice::python-rootfs-zstd uncompressedLayerBytes=' + j.uncompressedLayerBytes + ' zstdLayerBytes=' + j.zstdLayerBytes + ' archiveBytes=' + j.archiveBytes + ' ratio=' + j.ratio)"
+          # 150 MiB incompressible SINGLE layer (tested size above the python fixture)
+          node tools/ci/build-incompressible-zstd.mjs --out /tmp/bench/zstd-1x150.tar --layers 1 --size-mib 150
+          # tiny archive whose zstd layer DECLARES 600 MiB uncompressed (zeros) — fallback limit refusal test
+          node --input-type=module -e "
+            import { synthesizeRawAsync, randomContent } from './tools/synth-lib.mjs';
+            import { writeFileSync } from 'node:fs';
+            const content = Buffer.alloc(600 * 1024 * 1024, 0);
+            const buf = await synthesizeRawAsync({ format: 'oci-save', compression: 'zstd', layers: [[{ name: 'data/zeros.bin', content, mode: 0o644 }]], history: [{ created_by: 'RUN dd if=/dev/zero of=/data/zeros.bin bs=1M count=600' }], repoTag: 'layerscope/huge-claims:latest' });
+            writeFileSync('/tmp/bench/huge-claims-600mib.tar', buf);
+            console.log('huge-claims archive bytes:', buf.length);
+          "
+          # soak layer + tiny soak image: deterministic 3 MiB payload (mulberry32 seed 7)
+          node --input-type=module -e "
+            import { mulberry32 } from './tools/synth-lib.mjs';
+            import zlib from 'node:zlib';
+            import { writeFileSync } from 'node:fs';
+            import { createHash } from 'node:crypto';
+            const rand = mulberry32(7);
+            const content = Buffer.alloc(3 * 1024 * 1024);
+            for (let i = 0; i < content.length; i++) content[i] = (rand() * 256) | 0;
+            const frame = zlib.zstdCompressSync(content, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } });
+            writeFileSync('./soak-layer.zst', frame); // served at /soak-layer.zst for the tab to fetch
+            console.log('::notice::soak layer frame bytes=' + frame.length + ' sha256(uncompressed)=' + createHash('sha256').update(content).digest('hex'));
+            const { synthesizeRawAsync } = await import('./tools/synth-lib.mjs');
+            const buf = await synthesizeRawAsync({ format: 'oci-save', compression: 'zstd', layers: [[{ name: 'data/big.bin', content, mode: 0o644 }]], history: [{ created_by: 'RUN dd if=/dev/urandom of=/data/big.bin' }], repoTag: 'layerscope/soak:latest' });
+            writeFileSync('/tmp/bench/soak-zstd.tar', buf);
+          "
           ls -la /tmp/bench
 
       - name: Install Chromium (playwright-core)
@@ -62,4 +89,8 @@ jobs:
           node tools/browser-bench.mjs --url http://127.0.0.1:8321 \
             --image /tmp/bench/alpine-rootfs-zstd.tar \
             --image /tmp/bench/bench64-zstd.tar \
-            --image /tmp/bench/python-rootfs-zstd.tar
+            --image /tmp/bench/python-rootfs-zstd.tar \
+            --image /tmp/bench/zstd-1x150.tar
+          EXPECTED_SHA=$(node --input-type=module -e "import{mulberry32}from'./tools/synth-lib.mjs';import{createHash}from'node:crypto';const r=mulberry32(7);const b=Buffer.alloc(3*1024*1024);for(let i=0;i<b.length;i++)b[i]=(r()*256)|0;console.log(createHash('sha256').update(b).digest('hex'))")
+          node tools/browser-soak.mjs --url http://127.0.0.1:8321 --image /tmp/bench/soak-zstd.tar --layer-url /soak-layer.zst --expected-sha256 "$EXPECTED_SHA" --iterations 2000 --analyses 50
+          node tools/browser-limit.mjs --url http://127.0.0.1:8321 --image /tmp/bench/huge-claims-600mib.tar
