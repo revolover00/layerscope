@@ -1,7 +1,13 @@
 # layerscope
 
+<p align="center">
+  <img src="assets/og.png" alt="layerscope — see inside your Docker image: per-layer file diffs, wasted space and an efficiency score, right in your browser" width="760">
+</p>
+
 [![CI](https://github.com/revolover00/layerscope/actions/workflows/ci.yml/badge.svg)](https://github.com/revolover00/layerscope/actions/workflows/ci.yml)
 [![Deploy to GitHub Pages](https://github.com/revolover00/layerscope/actions/workflows/pages.yml/badge.svg)](https://github.com/revolover00/layerscope/actions/workflows/pages.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
+[![v0.1.0](https://img.shields.io/badge/release-v0.1.0-black.svg)](https://github.com/revolover00/layerscope/releases/tag/v0.1.0)
 
 **A browser-only Docker image inspector.** Drop a `.tar` produced by `docker save`
 and layerscope unpacks it *in your browser* — nothing is uploaded, no server is
@@ -12,6 +18,13 @@ files inside it.
 Live site: <https://revolover00.github.io/layerscope/>
 
 No install, no account, no backend. The whole app is static files.
+
+## What's new
+
+See [CHANGELOG.md](CHANGELOG.md) for the full history. Highlights:
+
+- **v0.1.0** — first public release: zstd layers via native `DecompressionStream` or the bundled pure-JS **fzstd** decoder (no WebAssembly), every fallback layer sha256-verified against `rootfs.diff_ids`, 160 MiB hard cap enforced pre-allocation and mid-decode, dive-compatible efficiency/waste (17/17 dive goldens, 44/44 unit tests), OCI multi-arch picker, fully self-hosted static site.
+- **Site & repo hardening (2026-11-06)** — branded [404](404.html) page, social-preview card + `og:`/`twitter:` tags, `robots.txt` + `sitemap.xml`, private reporting in [SECURITY.md](SECURITY.md), contributor invariants in [CONTRIBUTING.md](CONTRIBUTING.md), changelog, PR/issue templates.
 
 ## Quick start
 
@@ -522,3 +535,7 @@ samples/                Dockerfiles used by CI (add-delete, overwrite, multi-was
 
 [MIT](LICENSE). Swappable — if a different license is needed for this codebase,
 the MIT text can be replaced wholesale.
+
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security (private reporting): [SECURITY.md](SECURITY.md)
