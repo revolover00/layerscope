@@ -102,6 +102,9 @@ jobs:
     name: real public images vs the real dive CLI
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -138,6 +141,6 @@ jobs:
           script: |
             const fs = require('fs');
             const log = (() => { try { return fs.readFileSync('/tmp/layerscope-real-images/compare.log', 'utf8'); } catch { return '(no compare.log — job failed before comparison ran; likely a pull/setup failure)'; } })();
-            const tail = log.length > 12000 ? '…\n' + log.slice(-12000) : log;
+            const tail = log.length > 24000 ? '…\n' + log.slice(-24000) : log;
             const body = ['**real-images CI failed.** Tolerances were not loosened; here is the raw comparison log (tail):', '', '```', tail, '```', '', 'Full outputs are in the `real-images-outputs` artifact.'].join('\n');
             await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body });
