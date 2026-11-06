@@ -12,7 +12,7 @@
 // File *contents* are never read; layer blobs are streamed and discarded.
 
 import { iterTarEntries, readBlobSlice, blobReadableStream } from './tar.js';
-import { nativeZstdStream, decompressZstd } from './zstd.js';
+import { nativeZstdStream, decompressZstd, createZstd, zstdFrameContentSize } from './zstd.js';
 import {
   FileTree,
   treeAddEntry,
@@ -44,10 +44,12 @@ const SMALL_FILE_MAX = 4 * 1024 * 1024; // collect tiny metadata files in pass 1
 // fallback allocates the whole layer inside the WASM heap (input + output both
 // live at once), so an unbounded layer is an allocation-crash / tab-OOM risk.
 // gzip layers are unaffected — they stream end-to-end. analyzeImage() callers
-// may tune this with the `maxLayerBytes` option. Tested maximum: ~119.5 MiB
-// (python:3.12-slim recompressed as a single zstd layer, in real Chromium via
-// browser-bench.yml). Refusal produces a clear error, never a silent crash.
-const DEFAULT_MAX_LAYER_BYTES = 512 * 1024 * 1024; // 512 MiB
+// may tune this with the `maxLayerBytes` option. Tested up to the limit on
+// node (159 MiB content layer passes, rss ~1009 MB peak; a 160 MiB-content
+// layer whose tar lands 2 KB over the limit is refused BEFORE allocating) and
+// in real Chromium (150 MiB incompressible single layer, see browser-bench).
+// Refusal produces a clear error, never a silent crash.
+const DEFAULT_MAX_LAYER_BYTES = 160 * 1024 * 1024; // 160 MiB
 const COLLECT_PATHS = new Set(['manifest.json', 'index.json', 'oci-layout', 'repositories']);
 const ROOT_CONFIG_RE = /^[0-9a-f]{64}\.json$/;
 
@@ -58,7 +60,12 @@ async function sniffCompression(blob, offset) {
   return 'none';
 }
 
-async function layerStream(blob, offset, size, compression, maxLayerBytes) {
+async function sha256Hex(bytes) {
+  const buf = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function layerStream(blob, offset, size, compression, maxLayerBytes, zstdSessionHolder, layerHashes, layerIndex) {
   if (compression === 'none') {
     return blobReadableStream(blob, offset, offset + size);
   }
@@ -72,14 +79,30 @@ async function layerStream(blob, offset, size, compression, maxLayerBytes) {
     return blobReadableStream(blob, offset, offset + size).pipeThrough(new DecompressionStream('zstd'));
   }
   const raw = new Uint8Array(await readBlobSlice(blob, offset, offset + size));
-  const out = await decompressZstd(raw);
-  if (out.byteLength > maxLayerBytes) {
+  // Enforce the limit BEFORE allocating: if the zstd frame header carries a
+  // content size, refuse upfront without decoding. Otherwise decode with a
+  // hard cap (decompressZstd retries unknown-FCS frames at maxBytes).
+  const declared = zstdFrameContentSize(raw);
+  if (declared != null && declared > maxLayerBytes) {
     throw new Error(
-      `zstd layer decompressed to ${(out.byteLength / 1048576).toFixed(1)} MiB, exceeding the ${(maxLayerBytes / 1048576).toFixed(0)} MiB fallback limit. ` +
+      `zstd layer declares a decompressed size of ${(declared / 1048576).toFixed(1)} MiB (${declared} bytes), exceeding the ${(maxLayerBytes / 1048576).toFixed(0)} MiB (${maxLayerBytes} bytes) fallback limit — refusing to decode before allocating memory. ` +
       `The in-browser WASM decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
       `analyzeImage() callers can tune the limit via the maxLayerBytes option.`,
     );
   }
+  // one fresh WASM instance per analysis; released in analyzeImage's finally
+  if (!zstdSessionHolder.session) zstdSessionHolder.session = await createZstd();
+  const out = await decompressZstd(raw, { module: zstdSessionHolder.session, maxBytes: maxLayerBytes });
+  if (out.byteLength > maxLayerBytes) {
+    throw new Error(
+      `zstd layer decompressed to ${(out.byteLength / 1048576).toFixed(1)} MiB (${out.byteLength} bytes), exceeding the ${(maxLayerBytes / 1048576).toFixed(0)} MiB (${maxLayerBytes} bytes) fallback limit. ` +
+      `The in-browser WASM decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
+      `analyzeImage() callers can tune the limit via the maxLayerBytes option.`,
+    );
+  }
+  // integrity: hash of the decompressed layer is checked against the config's
+  // rootfs.diff_ids after the layer loop (only possible here — out is in memory)
+  if (layerHashes) layerHashes[layerIndex] = await sha256Hex(out);
   return new ReadableStream({
     start(controller) { controller.enqueue(out); controller.close(); },
   });
@@ -112,6 +135,8 @@ function alignHistory(history, layerCount) {
 }
 
 export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20, platform = null, maxLayerBytes = DEFAULT_MAX_LAYER_BYTES } = {}) {
+  const sessionHolder = { session: null }; // per-analysis WASM instance — dropped in `finally`
+  try {
   const warnings = [];
   const progress = (phase, detail) => onProgress({ phase, ...(detail || {}) });
 
@@ -246,6 +271,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
 
   const commands = alignHistory(history, layerPaths.length);
   const layerCount = layerPaths.length;
+  const layerHashes = new Array(layerCount).fill(null); // zstd-fallback path only: sha256 of the decompressed layer
 
   // ---------------- pass 2: analyze each layer in order ----------------
   const squashed = new FileTree();
@@ -285,7 +311,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     let entryBytes = 0;
     let sawAny = false;
     try {
-      for await (const { header } of iterTarEntries(await layerStream(blob, meta.dataOffset, meta.size, compression, maxLayerBytes), {
+      for await (const { header } of iterTarEntries(await layerStream(blob, meta.dataOffset, meta.size, compression, maxLayerBytes, sessionHolder, layerHashes, i), {
         collectData: () => false,
       })) {
         sawAny = true;
@@ -410,6 +436,28 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     progress('layer', { index: i, total: layerCount, detail: `layer ${i + 1}/${layerCount} done`, done: true });
   }
 
+  // ---------------- integrity: decompressed zstd layers vs config rootfs.diff_ids ----------------
+  // Only the WASM fallback path hashed layers (the layer is fully in memory
+  // there). gzip / plain-tar / native-zstd layers are streamed and cannot be
+  // hashed without buffering them — they remain unverified (see README).
+  if (diffIds.length) {
+    for (let i = 0; i < layerCount; i++) {
+      const computed = layerHashes[i];
+      if (!computed) continue; // streamed layer — nothing hashed
+      const expected = String(diffIds[i] || '').toLowerCase().replace(/^sha256:/, '');
+      if (!expected) continue; // no expectation for this index
+      if (expected !== computed) {
+        throw new Error(
+          `Integrity check failed: layer ${i + 1}/${layerCount} (${layerPaths[i]}) decompressed to sha256:${computed}, ` +
+          `but the image config rootfs.diff_ids expects sha256:${expected}. The archive does not match its own config ` +
+          `(a layer was modified or the archive is corrupt) — refusing to trust this analysis.`,
+        );
+      }
+    }
+  } else {
+    warnings.push('image config has no rootfs.diff_ids — layer integrity was NOT verified');
+  }
+
   // ---------------- final image files (squashed) ----------------
   for (const node of squashed.map.values()) {
     if (!node.explicit) continue;
@@ -457,4 +505,10 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     platforms: platformsMeta,       // null for legacy docker-save archives
     selectedPlatform,
   };
+  } finally {
+    // WebAssembly linear memory can never shrink in place — the only way to
+    // release it is to drop the instance and let the engine reclaim it
+    // (a page reload releases it deterministically otherwise).
+    sessionHolder.session = null;
+  }
 }
