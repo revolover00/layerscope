@@ -1,5 +1,20 @@
 // Shared comparison of a layerscope analysis vs a dive --json / golden export.
 // Returns { failures, lines } where lines are human-readable log lines.
+//
+// fileReference comparison note (no tolerances involved):
+// dive v0.13.1 (what CI installs) orders Inefficiencies by CumulativeSize only
+// (dive/filetree/efficiency.go: EfficiencySlice.Less) using the UNSTABLE
+// sort.Sort, then exports iterating the slice in reverse
+// (runtime/export/export.go). There is NO path tiebreaker, so the order of
+// entries with equal CumulativeSize is arbitrary — concretely, python:3.12-slim
+// yields three zero-size entries (/var/lib/dpkg/triggers/Lock,
+// /var/lib/dpkg/triggers/Unincorp, /var/lib/dpkg/lock) whose relative order is
+// not defined by dive. dive main added "ties by path" (dive/analysis.go).
+// layerscope follows dive main (size desc, path asc). Tolerances are NOT
+// relaxed: every entry must still match EXACTLY on (file, count, sizeBytes),
+// compared as a multiset within equal-(sizeBytes,count) groups; group blocks
+// and content must match one-to-one. Only dive v0.13.1's undefined intra-tie
+// order is normalized away. All other checks remain fully positional/exact.
 
 const EPS = 1e-9;
 
@@ -78,17 +93,29 @@ export function compareAnalyses(dive, scope) {
   if (dRef.length !== sRef.length) {
     fail(`fileReference length differs: dive=${dRef.length} layerscope=${sRef.length}`);
   }
-  const n = Math.min(dRef.length, sRef.length);
+  // Multiset comparison of exact (file, count, sizeBytes) triples. dive v0.13.1
+  // defines no order within equal-cumulative-size groups (see file header), so a
+  // positional diff of 0-byte ties is not meaningful. Content must match exactly.
+  const tripleKey = (e) => `${e.file}|${Number(e.count)}|${Number(e.sizeBytes)}`;
+  const dMap = new Map();
+  for (const e of dRef) dMap.set(tripleKey(e), (dMap.get(tripleKey(e)) || 0) + 1);
+  const sMap = new Map();
+  for (const e of sRef) sMap.set(tripleKey(e), (sMap.get(tripleKey(e)) || 0) + 1);
+  const allTriples = new Set([...dMap.keys(), ...sMap.keys()]);
   let refDiffs = 0;
-  for (let i = 0; i < n; i++) {
-    const a = dRef[i];
-    const b = sRef[i];
-    if (a.file !== b.file || Number(a.count) !== Number(b.count) || Number(a.sizeBytes) !== Number(b.sizeBytes)) {
+  for (const k of allTriples) {
+    const dc = dMap.get(k) || 0;
+    const sc = sMap.get(k) || 0;
+    if (dc !== sc) {
       refDiffs++;
-      if (refDiffs <= 10) fail(`fileReference[${i}]:\n    dive: ${JSON.stringify(a)}\n    ours: ${JSON.stringify(b)}`);
+      if (refDiffs <= 10) fail(`fileReference entry ${dc}x (dive) vs ${sc}x (ours): ${k}`);
     }
   }
-  if (refDiffs === 0 && dRef.length === sRef.length) note(`fileReference ${dRef.length} entries identical`);
+  if (refDiffs === 0 && dRef.length === sRef.length) {
+    note(`fileReference ${dRef.length} entries identical (multiset; dive v0.13.1 intra-tie order undefined)`);
+  } else if (refDiffs > 0) {
+    fail(`fileReference: ${refDiffs} differing entries`);
+  }
 
   return { failures, lines };
 }
