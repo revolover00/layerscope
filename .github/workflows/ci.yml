@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    name: unit tests + verification against dive's goldens
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Verify layerscope against dive's committed golden files
+        run: |
+          git clone --depth 1 https://github.com/wagoodman/dive /tmp/dive-src
+          DIVE_REPO=/tmp/dive-src node tools/verify-fixtures.mjs
+
+  samples:
+    name: sample images vs the real dive CLI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build sample images and save archives
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/layerscope-samples /tmp/samples
+          for name in clean add-delete overwrite multi-waste; do
+            docker build --no-cache -t "layerscope-samples/${name}" "samples/${name}"
+            docker save -o "/tmp/samples/${name}.tar" "layerscope-samples/${name}"
+          done
+
+      - name: Install dive v0.13.1
+        run: |
+          curl -fsSL -o /tmp/dive.tar.gz \
+            https://github.com/wagoodman/dive/releases/download/v0.13.1/dive_0.13.1_linux_amd64.tar.gz
+          tar -xzf /tmp/dive.tar.gz -C /tmp
+          chmod +x /tmp/dive
+          /tmp/dive --version
+
+      - name: Analyze archives with dive
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/out
+          for name in clean add-delete overwrite multi-waste; do
+            /tmp/dive --json "/tmp/out/${name}.dive.json" "docker-archive:/tmp/samples/${name}.tar"
+          done
+
+      - name: Analyze archives with layerscope
+        run: |
+          set -euo pipefail
+          for name in clean add-delete overwrite multi-waste; do
+            node tools/analyze.mjs "/tmp/samples/${name}.tar" --json "/tmp/out/${name}.layerscope.json"
+          done
+
+      - name: Compare layerscope against dive (must match exactly)
+        run: |
+          set -euo pipefail
+          for name in clean add-delete overwrite multi-waste; do
+            echo "::group::${name}"
+            node tools/compare.mjs "/tmp/out/${name}.dive.json" "/tmp/out/${name}.layerscope.json"
+            echo "::endgroup::"
+          done
+
+      - name: dive --ci passes on the clean sample
+        run: /tmp/dive --ci "docker-archive:/tmp/samples/clean.tar"
+
+      - name: dive --ci rejects the wasteful samples (expected)
+        run: |
+          # Default rules fail below 0.9 efficiency / above 10% user-wasted bytes.
+          # These three samples are wasteful by design, so dive exits non-zero.
+          # This step never fails the build; it only reports dive's verdict.
+          for name in add-delete overwrite multi-waste; do
+            if /tmp/dive --ci "docker-archive:/tmp/samples/${name}.tar"; then
+              echo "::warning::dive --ci unexpectedly passed on ${name} (alpine base may have changed sizes)"
+            else
+              echo "dive --ci rejected ${name} as expected"
+            fi
+          done
