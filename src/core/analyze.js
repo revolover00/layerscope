@@ -45,7 +45,7 @@ const SMALL_FILE_MAX = 4 * 1024 * 1024; // collect tiny metadata files in pass 1
 // live at once), so an unbounded layer is an allocation-crash / tab-OOM risk.
 // gzip layers are unaffected — they stream end-to-end. analyzeImage() callers
 // may tune this with the `maxLayerBytes` option. Tested up to the limit on
-// node (159 MiB content layer passes, rss ~1009 MB peak; a 160 MiB-content
+// node (159 MiB content layer passes, rss ~1021 MB peak; a 160 MiB-content
 // layer whose tar lands 2 KB over the limit is refused BEFORE allocating) and
 // in real Chromium (150 MiB incompressible single layer, see browser-bench).
 // Refusal produces a clear error, never a silent crash.

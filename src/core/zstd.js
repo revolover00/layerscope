@@ -1,18 +1,19 @@
 // Shared WASM zstd support.
 //
-// Strategy per environment:
-//   browser:  dynamic-import the vendored ESM web build; it fetches zstd.wasm
-//             relative to its own URL — works on any static host (Pages).
+// Strategy per environment (per-analysis isolation — see README "Decoder
+// integrity"):
+//   browser:  a one-module Web Worker per analysis (src/core/zstd.worker.js);
+//             own global scope ⇒ a fresh, pristine WASM instance; the analysis
+//             terminates the worker in analyzeImage()'s finally, which
+//             deterministically destroys the linear memory (it never shrinks
+//             in place).
 //   node:     require() the "@bokuweb/zstd-wasm" CJS build (devDependency,
-//             installed by `npm ci` for the tools).
+//             installed by `npm ci` for the tools) fresh per analysis — the
+//             whole package require-cache subtree is busted, and evicted
+//             again after the require so the instance is collectable.
 //
 // Two instance flavors:
-//   createZstd() — a FRESH WASM instance every call (browser: query-busted
-//                  module import; node: require-cache bust). analyzeImage()
-//                  uses one per analysis and drops the reference when done:
-//                  WebAssembly linear memory can never shrink in place, so
-//                  the only way to release it is to drop the instance and
-//                  let the engine reclaim it (or reload the page).
+//   createZstd() — a fresh decoder per analysis (see above).
 //   loadZstd()   — a cached process-wide instance for tools/verifiers that
 //                  decompress many times on purpose.
 //
@@ -26,20 +27,12 @@
 //      allocate more than maxBytes no matter how big the real output is.
 
 let zstdModulePromise = null;
-let sessionCounter = 0;
 
 function isBrowser() {
   return typeof window !== 'undefined' && typeof document !== 'undefined';
 }
 
 async function importFresh() {
-  if (isBrowser()) {
-    // query-busted URL ⇒ the engine builds a NEW module instance (the static
-    // host ignores the query); each analysis starts with a clean WASM heap
-    const mod = await import(`../../assets/vendor/zstd/index.web.js?session=${++sessionCounter}`);
-    await mod.init();
-    return mod;
-  }
   const { createRequire } = await import('node:module');
   const { sep } = await import('node:path');
   const require = createRequire(import.meta.url);
@@ -63,19 +56,19 @@ async function importFresh() {
 }
 
 /**
- * The instance analyzeImage() should use.
- *  - node:    a FRESH instance per analysis (the CJS build happily re-
- *             instantiates; the whole require subtree is busted and evicted).
- *             The analysis drops its reference in `finally`; node reclaims the
- *             WASM heap at GC. Measured: arrayBuffers after GC returns to the
- *             archive size (+0.01 MiB retained for a 150 MiB single layer).
- *  - browser: the vendored ESM bundle is ONE module instance per page — its
- *             static import graph (zstd.js/module.js) is cached by URL, so a
- *             query-busted entry does not re-instantiate the wasm; re-init of
- *             the shared Module also races (the module-level `initialized`
- *             promise resolves only once). So the browser SHARES one instance
- *             for the page. WebAssembly memory never shrinks in place — a page
- *             reload is required to release it (documented in README).
+ * The decoder analyzeImage() should use, FRESH per analysis.
+ *  - node:    a FRESH CJS instance (the whole require subtree is busted and
+ *             evicted). analyzeImage()'s `finally` drops the reference; node
+ *             reclaims the WASM heap at GC. Measured: arrayBuffers after GC
+ *             returns to the archive size (+0.01 MiB retained, 150 MiB layer).
+ *  - browser: a one-module Web Worker per analysis, terminated in
+ *             analyzeImage()'s `finally` — the WASM linear memory is destroyed
+ *             with the worker (never shrinks in place), so no page reload is
+ *             needed to release it. Warm does NOT get a decoder cache for
+ *             this reason: cross-analysis reuse demonstrably produced
+ *             different bytes for the same frame in Chromium.
+ * A fresh page-wide instance per analysis also means: zero degradation on any
+ * number of analyses in one tab (browser soak: 50/50 identical fingerprints).
  */
 export async function createZstd() {
   if (isBrowser()) {

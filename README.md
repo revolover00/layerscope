@@ -41,7 +41,11 @@ python3 -m http.server 8080        # or: npx serve .
   `DecompressionStream('zstd')`, otherwise through a vendored WebAssembly decoder
   (`assets/vendor/zstd`, `@bokuweb/zstd-wasm`, MIT). The WASM fallback decodes one
   layer in memory; gzip layers stream end-to-end. Verified against dive's
-  `oci-save-zstd` golden — it passes.
+  `oci-save-zstd` golden — it passes. Every decompressed zstd-fallback layer is
+  **sha256-verified against the image config's `rootfs.diff_ids`** (mismatch fails
+  the analysis with a clear error; see "Decoder integrity" below), and each
+  analysis decodes on a **fresh decoder instance** (node: fresh module per call;
+  browser: a one-module Web Worker per analysis, terminated afterwards).
 - **Per layer:** uncompressed tar-header byte size, the creating command
   (from image config `history`, with dive's `/bin/sh -c ` prefix trimmed),
   entry count, and the diff vs. the squashed lower image —
@@ -60,9 +64,9 @@ python3 -m http.server 8080        # or: npx serve .
   through `DecompressionStream`; the outer archive is never loaded whole into
   memory. Memory scales with the **largest single layer**, not with the archive's
   total size or file count: gzip layers and native-zstd layers stream end-to-end,
-  while the WASM zstd fallback holds one layer in memory at a time and its
-  linear memory never shrinks afterwards (measured — see the memory bench
-  section below)
+  while the WASM zstd fallback holds one layer in memory at a time — released
+  after each analysis (worker termination in the browser; GC-able in node) —
+  see the memory bench section below
 - **UI:** filterable layer diff lists, wasted-space table with per-path copy counts, efficiency gauge, one-click copy of the creating command, keyboard-accessible dropzone, self-hosted Geist fonts (no CDN)
 
 ## What does not work (honestly)
@@ -72,15 +76,20 @@ python3 -m http.server 8080        # or: npx serve .
   message says exactly that. The WASM fallback holds one layer in memory — gzip
   layers remain fully streaming. Legacy `docker save` archives do not carry zstd
   layers; `oci-save` zstd is the supported layout.
-- **The WASM zstd fallback refuses single layers larger than 512 MiB.** The decoder
-  must hold one decompressed layer in linear memory; a layer above the limit fails
-  with a clear error naming the layer, its decompressed size and the limit,
-  instead of a crash (gzip layers stream end-to-end and are unaffected). Callers
-  of `analyzeImage()` can raise or lower the limit with the `maxLayerBytes`
-  option (default 512 MiB). **Tested maximum: a single 114.4 MiB (119,942,656 B)
-  zstd layer** — python:3.12-slim's rootfs recompressed as one zstd layer,
-  analyzed end-to-end in real headless Chromium (cold 798 ms / warm 514 ms,
-  JS heap 168.8 MB, zero console errors — see the browser benchmark table).
+- **The WASM zstd fallback refuses single layers larger than 160 MiB (167,772,160 bytes).**
+  The decoder must hold one decompressed layer in linear memory; a layer above the
+  limit is refused **before allocating** — the check reads the zstd frame content
+  size from the header, so even a 27 KB archive claiming an 600 MiB layer is
+  refused without decoding (verified). Frames without a content size are decoded
+  with a hard cap equal to the limit. The error names the layer, the raw byte
+  counts and the remedy (gzip layers stream end-to-end and are unaffected).
+  Callers of `analyzeImage()` can raise or lower the limit with the `maxLayerBytes`
+  option. **Tested up to the limit:** a 159 MiB-content layer passes on node
+  (rss ~1021 MB peak, 1141 ms) and a 160 MiB-content layer whose tar lands 2 KB
+  over the limit is refused pre-allocation; in real Chromium a 150 MiB
+  incompressible single layer passes end-to-end (cold 912 ms / warm 931 ms,
+  zero console errors — see the browser benchmark table). The python:3.12-slim
+  single zstd layer (114.4 MiB) also passes (cold 831 ms / warm 762 ms).
 - **`.tar.gz` / `.tar.zst` of a docker-archive is not supported.** `docker save`
   emits an uncompressed `.tar` already; layerscope expects exactly that and
   detects the outer gzip/zstd magic bytes to say so instead of failing with the
@@ -109,7 +118,7 @@ Numbers below are real output from this repository, not aspirations.
 
 ```
 $ npm test          # node --test
-# tests 18   # pass 18   # fail 0
+# tests 33   # pass 33   # fail 0
 ```
 
 ### layerscope vs. dive's own golden files
@@ -284,53 +293,97 @@ cold/warm zstd analysis of a recompressed alpine rootfs for exactly this reason.
 
 Measured by `browser-bench.yml` (headless Chromium, ubuntu-latest, site served
 locally, archive uploaded through the real file input; time from upload until
-the analysis view is fully rendered; two consecutive runs on identical code are
-shown where the runner varied):
+the analysis view is fully rendered). "warm" is the second analysis in the same
+page; since the fix for the decoder degradation (see "Decoder integrity"),
+**every analysis decodes on a fresh decoder instance** — a per-analysis Web
+Worker with its own WASM instance (~spawn + init cost included in warm):
 
-| image                                                     | archive | uncompressed | layers | cold (WASM fetch+compile+init) | warm  | JS heap after cold/warm |
-|-----------------------------------------------------------|---------|--------------|--------|--------------------------------|-------|--------------------------|
-| alpine:3.20 rootfs exported and recompressed with zstd (level 3, REAL compressible layer) | 3.4 MB  | ~3.5 MB | 1      | 244–313 ms                     | 109–114 ms | 19.6 / 19.6 MB |
-| synthetic incompressible 62 MiB zstd (the fixture above)  | 62.0 MB | 62 MiB       | 6      | 382–510 ms                     | 319–454 ms | 98.2 / 98.2 MB |
-| **python:3.12-slim rootfs exported and recompressed with zstd (level 3, REAL large image)** | **36.2 MB (ratio 0.32)** | **114.4 MiB (119,942,656 B)** | **1** | **645–798 ms** | **394–514 ms** | **168.8 / 168.8 MB** |
+| image                                                     | archive | uncompressed | layers | cold (worker spawn + WASM init) | warm  | JS heap after cold/warm |
+|-----------------------------------------------------------|---------|--------------|--------|---------------------------------|-------|--------------------------|
+| alpine:3.20 rootfs exported and recompressed with zstd (level 3, REAL compressible layer) | 3.4 MB  | ~3.5 MB | 1      | 198 ms                         | 143 ms | 19.6 / 19.6 MB |
+| synthetic incompressible 62 MiB zstd (the fixture above)  | 62.0 MB | 62 MiB       | 6      | 461 ms                         | 431 ms | 33.5 / 33.5 MB |
+| **python:3.12-slim rootfs exported and recompressed with zstd (level 3, REAL large image)** | **36.2 MB (ratio 0.32)** | **114.4 MiB (119,942,656 B)** | **1** | **831 ms** | **762 ms** | **124.9 / 124.9 MB** |
+| **synthetic incompressible 150 MiB zstd (single layer)** | **150.0 MB** | **150 MiB (157,286,400 B)** | **1** | **912 ms** | **931 ms** | **307.1 / 307.1 MB** |
 
 All runs: zero console/page errors; `performance.memory` reports the JS heap
-only — the one-shot WASM decoder's linear memory (which must hold the full
-decompressed layer, ~114.4 MiB for the python image) is NOT included in that
-counter; the node-side measurement of that path is in the memory bench section
-below. An earlier development build showed a ~75 s end-to-end analysis on a
-zstd image in headless Chromium; that figure is not reproducible with the
-current code on any image above (including the 114.4 MiB single-layer case), and
-the fixture it was measured on no longer exists — it is not attributable
-precisely. What is verified now: current main analyzes a 114.4 MiB
-single-layer real image end-to-end in a real browser in under a second, with
-zero console errors.
+only — the WASM instance lives inside the per-analysis worker, not in the page
+JS heap, and its linear memory is destroyed with the worker (deterministic
+release, verified in code review + CI). An earlier development build showed a
+~75 s end-to-end analysis on a zstd image in headless Chromium; that figure is
+not reproducible with the current code on any image above (including the
+114.4 MiB and 150 MiB single-layer cases), and the fixture it was measured on
+no longer exists — it is not attributable precisely. What is verified now:
+current main analyzes a 150 MiB single-layer image end-to-end in a real browser
+in under a second, with zero console errors.
 
 Memory on the zstd fallback path: `heapUsed` alone is misleading because the
 vendored WASM decoder lives in linear (ArrayBuffer/external) memory. Measured
-with `tools/bench-memory.mjs` (`node --expose-gc`, the same 62 MiB zstd fixture,
-fresh process, WASM module cold, peak sampled inside `onProgress`):
-
-- `arrayBuffers` 0.01 → 62.0 MB (file Buffer + copies) → 124.1 MB during analysis → 82.7 MB after GC (+20.7 MB retained: grown WASM linear memory + module; warm-module runs return to +0.2 MB after GC)
-- `rss` 45.7 → 107.9 MB after file load → 219–226 MB during analysis → 181–220 MB after GC (+73 to +112 MB over before analysis)
-- `heapUsed` delta ≤ +0.8 MB — reporting heapUsed alone would miss ~120 MB of RSS growth
-- the outer archive Buffer accounts for the rest; file bytes are never retained after analysis
-
-Memory scaling measured on the same fallback path — two zstd archives with the
-**same 120 MiB of uncompressed layer data** (incompressible random content,
-`node --expose-gc tools/bench-memory.mjs`, fresh process, peak RSS sampled
-inside `onProgress`):
+with `tools/bench-memory.mjs` (`node --expose-gc`, fresh process, peak RSS
+sampled inside `onProgress`):
 
 | archive                               | layers | rss peak (max sampled) | rss Δ during analysis | arrayBuffers after GC | elapsed |
 |---------------------------------------|--------|------------------------|-----------------------|-----------------------|---------|
-| 1 layer × 120 MiB (`/tmp/zstd-1x120.tar`, 120.0 MB) | 1      | **665.9 MB**           | +500.8 MB             | 240.0 MB (+120 MB retained: grown WASM linear memory) | 601 ms |
-| 12 layers × 10 MiB (`/tmp/zstd-12x10.tar`, 120.0 MB) | 12   | **295.4 MB**           | +100.4 MB             | 120.0 MB (+0.0 MB)     | 276 ms |
+| 1 layer × 120 MiB (120.0 MB)         | 1      | **787.7 MB**           | +622.6 MB             | 120.0 MB (**+0.01 MB retained**) | 865 ms |
+| 12 layers × 10 MiB (120.0 MB)        | 12     | **308.0 MB**           | +113.1 MB             | 120.0 MB (**+0.01 MB retained**) | 417 ms |
+| 1 layer × 150 MiB (157.3 MB)         | 1      | **967.7 MB**           | +772.4 MB             | 150.0 MB (**+0.01 MB retained**) | 1057 ms |
+| 1 layer × 159 MiB (166.7 MB, tar just under the 160 MiB limit) | 1 | **1021.2 MB** | +816.9 MB   | 159.0 MB (**+0.01 MB retained**) | 1141 ms |
 
-So layers ARE analyzed one at a time; peak memory grows with the **largest
-single layer**, not with the number of layers and not with total size. What the
-WASM fallback cannot avoid: the one-shot decode materializes the whole layer in
-linear memory, and WASM linear memory never shrinks — a 120 MiB single layer
-leaves ~120 MB of grown WASM memory behind even after GC. gzip layers have
-neither caveat.
+Notes:
+
+- Layers ARE analyzed one at a time; peak memory grows with the **largest
+  single layer**, not with the number of layers and not with total size
+  (787.7 vs 308.0 MB peak for the same 120 MiB payload).
+- Every analysis decodes on a **fresh decoder instance** (see "Decoder
+  integrity"). node reclaims the instance's WASM heap at GC — measured +0.01 MB
+  arrayBuffers retained after GC across all runs (was +120…+150 MB before this
+  fix). In the browser the instance lives in a per-analysis Web Worker that is
+  **terminated** after the analysis — its linear memory is destroyed
+  deterministically (WASM memory never shrinks in place; a page reload is not
+  required). Residual: node's RSS does not return its allocator high-water mark
+  to the OS, so `afterGc rss` sits above baseline (e.g. ~296–504 MB) while
+  `arrayBuffers` returns to the archive size.
+- gzip layers stream end-to-end and never materialize a layer in memory.
+
+The gzip path and (where available) the native
+`DecompressionStream('zstd')` path remain fully streaming, with no fallback
+allocation at all.
+
+### Decoder integrity
+
+The vendored decoder proved unsafe for cross-analysis reuse: in real Chromium,
+analyzing the SAME archive twice in one tab produced **different decompressed
+bytes on the second analysis** — the first analysis verified against the
+config's `rootfs.diff_ids`, the second decompressed layer 1/1 to
+`sha256:98fd2bc60cc9…` where the config expected `sha256:e3add3d5…`. CI
+browser soak caught it; before that fix the failure would have silently
+produced a wrong analysis. (Node showed the sibling failure mode — decoding a
+valid 171 B frame with zstd code `-72` on a long-lived shared heap.)
+
+Fixes and guarantees, in order:
+
+1. **Per-analysis isolation.** The browser decodes inside a module Web Worker
+   spawned per analysis and terminated at the end of it (own global scope ⇒ own
+   pristine WASM instance, deterministic memory release). node re-instantiates
+   per analysis (fresh module via require-cache bust, evicted afterwards; the
+   reference is dropped in `analyzeImage()`'s `finally`).
+2. **Integrity verification.** On the WASM zstd fallback the whole decompressed
+   layer is hashed and compared with the config's `rootfs.diff_ids` (ordered).
+   Any mismatch fails the analysis with a clear error naming the layer index
+   and both digests — silent corruption is impossible on this path. gzip /
+   plain-tar / native-zstd layers are streamed and cannot be hashed without
+   buffering; they are unverified (this covers virtually all real-world gzip
+   images).
+3. **Soak, both environments** (`tools/soak-zstd.mjs` on node,
+   `tools/browser-soak.mjs` in one Chromium tab via Playwright): the same zstd
+   frame decompressed 2,000 times with every output sha256-verified — 2,000/2,000
+   pass on node and in the browser (one tab, one decoder, many decodes of the
+   same frame); 50 analyses of one archive in one tab produce a single unique
+   fingerprint (image, chips, efficiency, sizes, per-layer digestIds) in both
+   environments. Node phase B likewise: uniqueFingerprints=1, 0 failures.
+4. **Limit enforcement before allocation.** The zstd frame content size is read
+   from the header when present; an over-limit layer is refused before any
+   decode (even a 27 KB zero-layer claiming 600 MiB — verified). Frames without
+   a content size are decoded with the hard cap as retry bound.
 
 Browser timings will differ; the bundled sample is 92 KiB and analyzes in milliseconds.
 ¹ Synthetic 6-layer OCI-save archive (gzip: `tools/synth-lib.mjs`; zstd:
@@ -358,6 +411,9 @@ tools/                  fixture synth, golden verification, comparison, smoke te
 tools/ci/               CI-only helpers (build zstd OCI fixtures)
 tools/browser-bench.mjs real-browser cold/warm analysis times (Chromium, used by browser-bench.yml)
 tools/bench-memory.mjs  rss + arrayBuffers memory bench for the zstd fallback path
+tools/soak-zstd.mjs     2000x same-frame decompress soak + 50-analysis fingerprint soak (node)
+tools/browser-soak.mjs  same soak in one Chromium tab (Playwright)
+tools/browser-limit.mjs 600 MiB-claim archive vs the browser fallback limit (Playwright)
 tools/check-real-images.sh  pull public images, compare vs dive CLI (used by ci.yml real-images job)
 tests/                  node --test unit tests
 LICENSE                 MIT
