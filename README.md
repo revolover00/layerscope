@@ -121,6 +121,33 @@ lists, byte sizes, creating commands, image totals, efficiency scores
 goldens on the fixtures that ran — including dive's two real on-disk
 docker-save images.
 
+`fileReference` is compared as a multiset of exact (file, count, sizeBytes)
+triples, not positionally: dive v0.13.1 orders that list by cumulative size
+only via the unstable `sort.Sort` and exports it in reverse
+(`dive/filetree/efficiency.go`, `runtime/export/export.go` in the v0.13.1 tag) —
+there is no path tiebreaker, so the order of equal-size entries is undefined
+there. layerscope emits size-descending, path-ascending (dive `main`
+behavior). Tolerances are not relaxed: every triple must still match exactly;
+counts, sizes and list contents are checked one-to-one, only dive v0.13.1's
+undefined intra-tie order is normalized away.
+
+### Real public images vs. the real dive CLI
+
+CI (`.github/workflows/ci.yml`, `real-images` job, `tools/check-real-images.sh`)
+pulls six public images — `alpine`, `busybox`, `nginx:alpine`, `python:3.12-slim`,
+`node:20-alpine`, `ubuntu:24.04` — `docker save`s them, analyzes with dive
+v0.13.1 via the daemon (`dive --json`) and with layerscope on the same tar, and
+compares with the same `tools/lib-compare.mjs` and tolerances as the golden
+verification (efficiencyScore rel tol 1e-9; everything else exact;
+fileReference as described above). Every difference is printed — nothing is
+suppressed. Current status on the default branch: **all six images match**
+(pulls via `mirror.gcr.io` with docker.io fallback; the job is re-run on every
+push). The one real discrepancy found during bring-up was python:3.12-slim's
+three zero-byte dpkg lock entries — the dive v0.13.1 intra-tie order artifact
+described above, not a layerscope bug; after the multiset comparison landed,
+python:3.12-slim matches exactly (image sizeBytes 119,470,750; inefficientBytes
+5,690,470; efficiencyScore 0.9671877593469531 identical to dive).
+
 ### Sample images vs. the real dive CLI
 
 `samples/` contains four Dockerfiles used in CI:
@@ -239,6 +266,26 @@ No speed advantage for zstd over gzip is claimed on real compressible data: the
 much work. Decode-rate comparisons on realistic compressible content are only
 meaningful per-payload; the browser benchmark in `browser-bench.yml` measures
 cold/warm zstd analysis of a recompressed alpine rootfs for exactly this reason.
+
+### Real-browser timings (Playwright Chromium in GitHub Actions)
+
+Measured by `browser-bench.yml` (headless Chromium, ubuntu-latest, site served
+locally, archive uploaded through the real file input; time from upload until
+the analysis view is fully rendered):
+
+| image                                                     | archive | layers | cold (WASM fetch+compile+init) | warm  |
+|-----------------------------------------------------------|---------|--------|--------------------------------|-------|
+| alpine:3.20 rootfs exported and recompressed with zstd (level 3, REAL compressible layer) | 3.4 MB  | 1      | 216 ms                         | 111 ms |
+| synthetic incompressible 62 MiB zstd (the fixture above)  | 62.0 MB | 6      | 405 ms                         | 342 ms |
+
+Both runs: zero console/page errors; JS heap after cold analysis 19.6 MB (alpine)
+and 98.2 MB (62 MiB) per Chromium `performance.memory` (JS heap only — WASM
+linear memory is not included in that counter). An earlier development build
+showed a ~75 s end-to-end analysis on a zstd image in headless Chromium; that
+figure is not reproducible with the current code on either image above (nor on
+the incompressible worst case), and the fixture it was measured on no longer
+exists — it is not attributable precisely. What is verified now: current main
+analyzes both images end-to-end in a real browser in well under a second.
 
 Memory on the zstd fallback path: `heapUsed` alone is misleading because the
 vendored WASM decoder lives in linear (ArrayBuffer/external) memory. Measured
