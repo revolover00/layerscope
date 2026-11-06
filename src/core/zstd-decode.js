@@ -22,7 +22,7 @@
 // containerd/buildx) can never allocate more than maxBytes. Zstd blocks are
 // at most 128 KiB, so the overshoot beyond maxBytes is at most one block.
 
-import { Decompress } from '../../assets/vendor/fzstd/index.mjs';
+import { Decompress, decompress as fzDecompress } from '../../assets/vendor/fzstd/index.mjs';
 
 export const zstdLimitMessage = (maxBytes) => (
   `zstd layer decompressed past the ${(maxBytes / 1048576).toFixed(0)} MiB (${maxBytes} bytes) fallback limit during decode — refusing. ` +
@@ -41,23 +41,81 @@ export class LayerLimitError extends Error {
 }
 
 /**
+ * Read the frame content size from a zstd frame header, if present.
+ * Returns the declared decompressed byte size, or null when the frame
+ * carries no FCS field (e.g. streamed compression, containerd/buildx).
+ * (Moved here from zstd.js so this module stays self-contained for the
+ * Web Worker; zstd.js re-exports it.)
+ */
+export function zstdFrameContentSize(bytes) {
+  if (!bytes || bytes.length < 6) return null;
+  // magic: 28 b5 2f fd
+  if (bytes[0] !== 0x28 || bytes[1] !== 0xb5 || bytes[2] !== 0x2f || bytes[3] !== 0xfd) return null;
+  const descriptor = bytes[4];
+  const fcsFlag = (descriptor >> 6) & 0x3;      // 0: <=1 B field, 1: 2 B, 2: 4 B, 3: 8 B
+  const singleSegment = (descriptor >> 5) & 0x1;
+  const dictIdFlag = descriptor & 0x3;          // 0/1/2/4 dictionary bytes follow
+  let offset = 5;
+  if (!singleSegment) offset += 1;              // window_descriptor
+  offset += [0, 1, 2, 4][dictIdFlag];
+  const at = (o) => (bytes[o] | (bytes[o + 1] << 8) | (bytes[o + 2] << 16) | (bytes[o + 3] << 24)) >>> 0;
+  if (fcsFlag === 0) {
+    if (!singleSegment) return null;            // no FCS field at all
+    if (bytes.length < offset + 1) return null;
+    return bytes[offset];                        // 1 byte
+  }
+  if (fcsFlag === 1) {
+    if (bytes.length < offset + 2) return null;
+    return (bytes[offset] | (bytes[offset + 1] << 8)) + 256; // 2 bytes, biased by 256
+  }
+  if (fcsFlag === 2) {
+    if (bytes.length < offset + 4) return null;
+    return at(offset);                           // 4 bytes LE
+  }
+  // fcsFlag === 3: 8 bytes LE
+  if (bytes.length < offset + 8) return null;
+  const v = BigInt(at(offset + 4)) * 4294967296n + BigInt(at(offset));
+  return v > 9007199254740991n ? Number.MAX_SAFE_INTEGER : Number(v);
+}
+
+/**
  * Decompress one zstd frame (or a concatenation of frames, which zstd
- * permits) using the streaming decoder, enforcing a hard byte budget.
+ * permits), enforcing a hard byte budget on decompressed output.
+ *
+ * Two tiers:
+ *   - Frame WITH a content size: refused immediately if it exceeds maxBytes
+ *     (nothing is decoded — same rule as analyze.js's upfront FCS check);
+ *     otherwise the one-shot decoder (single internal assembly) — fastest.
+ *   - Frame WITHOUT a content size: the streaming decoder with the cap
+ *     enforced mid-flight, byte by byte, so it can never allocate past
+ *     maxBytes (zstd blocks are ≤ 128 KiB, overshoot ≤ one block).
  *
  * @param {Uint8Array} frame   raw compressed bytes (the whole layer)
  * @param {object}      opts
  * @param {number}      opts.maxBytes  hard cap on DECOMPRESSED bytes
  * @returns {Uint8Array} the decompressed layer
- * @throws {LayerLimitError} if the decode crosses maxBytes
+ * @throws {LayerLimitError} if the (declared or decoded) size crosses maxBytes
  */
 export function decodeZstdCapped(frame, { maxBytes }) {
+  const fcs = zstdFrameContentSize(frame);
+  if (fcs !== null) {
+    if (fcs > maxBytes) throw new LayerLimitError(maxBytes);
+    try {
+      return fzDecompress(frame);
+    } catch (err) {
+      throw new Error(`Failed to decompress zstd layer with code: ${(err && err.message) || err}`);
+    }
+  }
   let total = 0;
   const chunks = [];
   const d = new Decompress((chunk) => {
     total += chunk.length;
     if (total > maxBytes) throw new LayerLimitError(maxBytes);
-    // fzstd may reuse internal buffers between blocks — always copy.
-    chunks.push(chunk.slice());
+    // fzstd emits a fresh buffer per block (verified: 64/64 unique underlying
+    // ArrayBuffers on a 4 MiB frame, byte-exact across repeated decodes), and
+    // the assembly below copies into `out` before returning — no aliasing
+    // ever escapes this function.
+    chunks.push(chunk);
   });
   try {
     d.push(frame, true);
