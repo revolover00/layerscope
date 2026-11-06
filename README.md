@@ -305,10 +305,19 @@ included in warm):
 
 | image                                                     | archive | uncompressed | layers | cold (worker spawn + decode)    | warm  | JS heap after cold/warm |
 |-----------------------------------------------------------|---------|--------------|--------|---------------------------------|-------|--------------------------|
-| alpine:3.20 rootfs exported and recompressed with zstd (level 3, REAL compressible layer) | 3.4 MB  | ~3.5 MB | 1      | 198 ms                         | 143 ms | 19.6 / 19.6 MB |
-| synthetic incompressible 62 MiB zstd (the fixture above)  | 62.0 MB | 62 MiB       | 6      | 461 ms                         | 431 ms | 33.5 / 33.5 MB |
-| **python:3.12-slim rootfs exported and recompressed with zstd (level 3, REAL large image)** | **36.2 MB (ratio 0.32)** | **114.4 MiB (119,942,656 B)** | **1** | **831 ms** | **762 ms** | **124.9 / 124.9 MB** |
-| **synthetic incompressible 150 MiB zstd (single layer)** | **150.0 MB** | **150 MiB (157,286,400 B)** | **1** | **912 ms** | **931 ms** | **307.1 / 307.1 MB** |
+| alpine:3.20 rootfs exported and recompressed with zstd (level 3, REAL compressible layer) | 3.4 MB  | ~3.5 MB | 1      | 298 ms                         | 235 ms | 19.6 / 19.6 MB |
+| synthetic incompressible 62 MiB zstd (the fixture above)  | 62.0 MB | 62 MiB       | 6      | 470 ms                         | 438 ms | 33.5 / 33.5 MB |
+| **python:3.12-slim rootfs exported and recompressed with zstd (level 3, REAL large image)** | **36.2 MB (ratio 0.32)** | **114.4 MiB (119,942,656 B)** | **1** | **1397 ms** | **1315 ms** | **124.9 / 124.9 MB** |
+| **synthetic incompressible 150 MiB zstd (single layer)** | **150.0 MB** | **150 MiB (157,286,400 B)** | **1** | **873 ms** | **882 ms** | **307.1 / 307.1 MB** |
+
+Measured on the current decode path (two-tier `decodeZstdCapped` + the
+byteOffset/byteLength worker protocol fix), GitHub Actions run 42225036157
+(commit `8813024`): browser soak 2000/2000 same-frame decodes with matching
+sha256, 50/50 repeated analyses with a single unique fingerprint, both
+huge-claims limit refusals fired with `pageErrors=0`, and the 12-layer × 20
+analyses run produced one fingerprint — zero console/page errors throughout.
+Timings vary run-to-run by ~10%; treat them as order-of-magnitude, not
+regression thresholds.
 
 All runs: zero console/page errors; `performance.memory` reports the JS heap
 only — the decoder state lives inside the per-analysis worker, not in the page
@@ -332,7 +341,11 @@ sampled inside `onProgress`):
 | 12 layers × 10 MiB (120.0 MB)        | 12     | **315.9 MB**           | +130.9 MB             | 120.1 MB (**+0.01 MB**)  | 616 ms |
 | 1 layer × 150 MiB (157.3 MB)         | 1      | **795.4 MB**           | +600.0 MB             | 300.0 MB (+150.0 MB)¹   | 891 ms |
 | 6 layers × 10 MiB bench64             | 6      | **225.9 MB**           | +120.5 MB             | 60.0 MB (**+0.01 MB**)   | 330 ms |
-| 1 layer × 159 MiB (166.7 MB, tar just under the 160 MiB limit) | 1 | **853.4 MB** | +649.1 MB   | 318.0 MB (+159.0 MB)¹   | 1081 ms |
+| 1 layer × 159 MiB (166.7 MB, tar just under the 160 MiB limit) | 1 | **683.3 MB** | n/r (see note) | 318.0 MB (+159.0 MB)¹   | 801 ms |
+
+(The 159 MiB row was re-measured with the two-tier decode, which keeps
+single-segment FCS frames on a single allocation: peak 853.4 → 683.3 MB,
+elapsed 1081 → 801 ms. The Δ-during-analysis figure was not re-measured.)
 
 ¹ A single `gc()` pass leaves exactly one archive-sized ArrayBuffer for
 SINGLE-layer workspaces (external-buffer accounting lags a cycle); a second
