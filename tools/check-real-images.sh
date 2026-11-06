@@ -28,14 +28,14 @@ tag_of() { echo "$1" | tr '/:' '__'; }
 # tagged back to their canonical name before saving.
 pull_one() {
   local img="$1"
-  for attempt in 1 2; do
+  for attempt in 1 2 3; do
     if docker pull "mirror.gcr.io/library/$img"; then
       docker tag "mirror.gcr.io/library/$img" "$img"
       return 0
     fi
     echo "mirror.gcr.io pull failed for $img (attempt $attempt) — falling back to docker.io"
     if docker pull "$img"; then return 0; fi
-    sleep 5
+    sleep 8
   done
   echo "::error::could not pull $img from mirror.gcr.io or docker.io"
   return 1
@@ -43,27 +43,27 @@ pull_one() {
 
 echo "==> pulling images ($(echo $IMAGES | wc -w))"
 for img in $IMAGES; do
-  pull_one "$img" || exit 1
+  pull_one "$img" || { echo "::error::stage=pull image=$img"; exit 1; }
 done
 
 echo "==> docker save"
 for img in $IMAGES; do
   tag="$(tag_of "$img")"
-  docker save -o "$WORK/${tag}.tar" "$img" || exit 1
+  docker save -o "$WORK/${tag}.tar" "$img" || { echo "::error::stage=save image=$img"; exit 1; }
   printf '    %12s bytes  %s\n' "$(stat -c%s "$WORK/${tag}.tar")" "$img"
 done
 
 echo "==> loading into daemon + dive --json"
-for img in $IMAGES; do docker load -i "$WORK/$(tag_of "$img").tar" >/dev/null || exit 1; done
+for img in $IMAGES; do docker load -i "$WORK/$(tag_of "$img").tar" >/dev/null || { echo "::error::stage=load image=$img"; exit 1; }; done
 for img in $IMAGES; do
   tag="$(tag_of "$img")"
-  "$DIVE" --json "$OUT/out/${tag}.dive.json" "$img" || { echo "dive failed on $img"; exit 1; }
+  "$DIVE" --json "$OUT/out/${tag}.dive.json" "$img" || { echo "::error::stage=dive image=$img"; exit 1; }
 done
 
 echo "==> layerscope analyze"
 for img in $IMAGES; do
   tag="$(tag_of "$img")"
-  node tools/analyze.mjs "$WORK/${tag}.tar" --json "$OUT/out/${tag}.layerscope.json" || exit 1
+  node tools/analyze.mjs "$WORK/${tag}.tar" --json "$OUT/out/${tag}.layerscope.json" || { echo "::error::stage=analyze image=$img"; exit 1; }
 done
 
 echo "==> compare (tools/lib-compare.mjs; efficiencyScore rel tol 1e-9, everything else exact; all diffs are printed)"
@@ -75,8 +75,10 @@ for img in $IMAGES; do
   echo "==================== $img ====================" | tee -a "$OUT/compare.log"
   if node tools/compare.mjs "$OUT/out/${tag}.dive.json" "$OUT/out/${tag}.layerscope.json" 2>&1 | tee -a "$OUT/compare.log"; then
     echo "RESULT $img: match" | tee -a "$OUT/compare.log"
+    echo "::notice::real-images RESULT $img: match"
   else
     echo "RESULT $img: MISMATCH (see diffs above)" | tee -a "$OUT/compare.log"
+    echo "::error::stage=compare image=$img (mismatch vs dive — see job log for diffs)"
     failed=1
   fi
 done
