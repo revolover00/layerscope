@@ -77,9 +77,10 @@ python3 -m http.server 8080        # or: npx serve .
   with a clear error naming the layer, its decompressed size and the limit,
   instead of a crash (gzip layers stream end-to-end and are unaffected). Callers
   of `analyzeImage()` can raise or lower the limit with the `maxLayerBytes`
-  option (default 512 MiB). The tested maximum — the largest single zstd layer
-  analyzed end-to-end in a real browser — is documented with the measured
-  numbers in the benchmark section below.
+  option (default 512 MiB). **Tested maximum: a single 114.4 MiB (119,942,656 B)
+  zstd layer** — python:3.12-slim's rootfs recompressed as one zstd layer,
+  analyzed end-to-end in real headless Chromium (cold 798 ms / warm 514 ms,
+  JS heap 168.8 MB, zero console errors — see the browser benchmark table).
 - **`.tar.gz` / `.tar.zst` of a docker-archive is not supported.** `docker save`
   emits an uncompressed `.tar` already; layerscope expects exactly that and
   detects the outer gzip/zstd magic bytes to say so instead of failing with the
@@ -283,21 +284,26 @@ cold/warm zstd analysis of a recompressed alpine rootfs for exactly this reason.
 
 Measured by `browser-bench.yml` (headless Chromium, ubuntu-latest, site served
 locally, archive uploaded through the real file input; time from upload until
-the analysis view is fully rendered):
+the analysis view is fully rendered; two consecutive runs on identical code are
+shown where the runner varied):
 
-| image                                                     | archive | layers | cold (WASM fetch+compile+init) | warm  |
-|-----------------------------------------------------------|---------|--------|--------------------------------|-------|
-| alpine:3.20 rootfs exported and recompressed with zstd (level 3, REAL compressible layer) | 3.4 MB  | 1      | 216 ms                         | 111 ms |
-| synthetic incompressible 62 MiB zstd (the fixture above)  | 62.0 MB | 6      | 405 ms                         | 342 ms |
+| image                                                     | archive | uncompressed | layers | cold (WASM fetch+compile+init) | warm  | JS heap after cold/warm |
+|-----------------------------------------------------------|---------|--------------|--------|--------------------------------|-------|--------------------------|
+| alpine:3.20 rootfs exported and recompressed with zstd (level 3, REAL compressible layer) | 3.4 MB  | ~3.5 MB | 1      | 244–313 ms                     | 109–114 ms | 19.6 / 19.6 MB |
+| synthetic incompressible 62 MiB zstd (the fixture above)  | 62.0 MB | 62 MiB       | 6      | 382–510 ms                     | 319–454 ms | 98.2 / 98.2 MB |
+| **python:3.12-slim rootfs exported and recompressed with zstd (level 3, REAL large image)** | **36.2 MB (ratio 0.32)** | **114.4 MiB (119,942,656 B)** | **1** | **645–798 ms** | **394–514 ms** | **168.8 / 168.8 MB** |
 
-Both runs: zero console/page errors; JS heap after cold analysis 19.6 MB (alpine)
-and 98.2 MB (62 MiB) per Chromium `performance.memory` (JS heap only — WASM
-linear memory is not included in that counter). An earlier development build
-showed a ~75 s end-to-end analysis on a zstd image in headless Chromium; that
-figure is not reproducible with the current code on either image above (nor on
-the incompressible worst case), and the fixture it was measured on no longer
-exists — it is not attributable precisely. What is verified now: current main
-analyzes both images end-to-end in a real browser in well under a second.
+All runs: zero console/page errors; `performance.memory` reports the JS heap
+only — the one-shot WASM decoder's linear memory (which must hold the full
+decompressed layer, ~114.4 MiB for the python image) is NOT included in that
+counter; the node-side measurement of that path is in the memory bench section
+below. An earlier development build showed a ~75 s end-to-end analysis on a
+zstd image in headless Chromium; that figure is not reproducible with the
+current code on any image above (including the 114.4 MiB single-layer case), and
+the fixture it was measured on no longer exists — it is not attributable
+precisely. What is verified now: current main analyzes a 114.4 MiB
+single-layer real image end-to-end in a real browser in under a second, with
+zero console errors.
 
 Memory on the zstd fallback path: `heapUsed` alone is misleading because the
 vendored WASM decoder lives in linear (ArrayBuffer/external) memory. Measured
