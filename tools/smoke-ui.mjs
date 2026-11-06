@@ -47,6 +47,14 @@ if (ready) {
 
   // layer detail defaults to layer 0
   assert($('ld-command').textContent.includes('echo'), `layer command: ${$('ld-command').textContent}`);
+  // copy-command button copies the exact creating command and gives feedback
+  const cmdText = $('ld-command').textContent;
+  let clipboardValue = null;
+  try { Object.defineProperty(globalThis.navigator, 'clipboard', { value: { writeText: async (t) => { clipboardValue = t; } }, configurable: true }); } catch { /* keep default */ }
+  $('ld-copy-command').click();
+  await new Promise((r) => setTimeout(r, 10));
+  assert(clipboardValue === cmdText, `copy writes the exact command to the clipboard: ${clipboardValue ? JSON.stringify(clipboardValue.slice(0, 48)) : 'nothing copied'}`);
+  assert($('ld-copy-command').querySelector('.copy-btn-label').textContent === 'Copied!', `copy button feedback label: ${$('ld-copy-command').querySelector('.copy-btn-label').textContent}`);
   const fileRows = window.document.querySelectorAll('#ld-file-list .file-row');
   assert(fileRows.length > 0, `file rows rendered for layer 0: ${fileRows.length}`);
 

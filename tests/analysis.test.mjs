@@ -6,6 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { analyzeImage } from '../src/core/analyze.js';
+import zlib from 'node:zlib';
+
 import { synthesize } from '../tools/synth.mjs';
 
 class MemBlob {
@@ -98,4 +100,26 @@ test('git-style top files list is sorted and bounded', async () => {
     assert.ok(a.topLayerEntries[i - 1].size >= a.topLayerEntries[i].size);
   }
   assert.ok(a.topFinalFiles.length <= 3);
+});
+
+test('a gzip-wrapped outer archive (.tar.gz) is rejected with a targeted message', async () => {
+  // docker save output piped through gzip: impossible to random-access, so the
+  // analyzer must fail fast and say why instead of "no manifest.json".
+  const inner = synthesize('add-delete', 'legacy', 'none');
+  const wrapped = zlib.gzipSync(inner);
+  await assert.rejects(
+    () => analyzeImage(new MemBlob(wrapped)),
+    /gzip-compressed/,
+  );
+});
+
+test('a zstd-wrapped outer archive (.tar.zst) is rejected with a targeted message', async () => {
+  const wrapped = Buffer.concat([
+    Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0x04, 0x00]),
+    Buffer.from('not really zstd payload, just the magic'),
+  ]);
+  await assert.rejects(
+    () => analyzeImage(new MemBlob(wrapped)),
+    /zstd-compressed/,
+  );
 });
