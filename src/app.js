@@ -135,6 +135,7 @@ function renderAnalysis(a, label) {
 
   $('#stat-total').textContent = formatBytes(a.totalSizeBytes);
   $('#stat-wasted').textContent = formatBytes(a.wastedBytes);
+  $('#stat-reclaimable').textContent = formatBytes(a.reclaimableBytes);
 
   // gauge
   const score = a.efficiency;
@@ -272,7 +273,7 @@ function renderFileList() {
   const frag = document.createDocumentFragment();
   for (const r of shown) {
     const row = el('div', 'file-row');
-    const kind = el('span', `file-kind kind-${r.kind}`, r.kind.toUpperCase().slice(0, 4));
+    const kind = el('span', `file-kind kind-${r.kind}`, r.kind.toUpperCase());
     const path = el('span', 'file-path', r.path);
     path.title = r.opaque ? `opaque marker — contents of ${r.path} hidden from lower layers` : r.whiteout ? `whiteout: ${r.whiteout}` : r.path;
     let meta;
@@ -337,6 +338,7 @@ function renderWasted() {
 
   $('#ws-efficiency').textContent = formatPercent(a.efficiency, 1);
   $('#ws-wasted').textContent = formatBytes(a.wastedBytes);
+  $('#ws-reclaimable').textContent = formatBytes(a.reclaimableBytes);
   $('#ws-userpct').textContent = formatPercentBig(a.wastedUserPercent);
   $('#ws-paths').textContent = formatCount(a.inefficiencies.length);
 

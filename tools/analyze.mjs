@@ -103,5 +103,5 @@ if (jsonOut) {
 // Human-readable summary on stderr so --json stays machine readable
 console.error(`${basename(target)}: format=${analysis.format} layers=${analysis.layerCount} ` +
   `size=${analysis.totalSizeBytes}B efficiency=${(analysis.efficiency * 100).toFixed(2)}% ` +
-  `wasted=${analysis.wastedBytes}B (${elapsedMs}ms)`);
+  `wasted=${analysis.wastedBytes}B reclaimable=${analysis.reclaimableBytes}B (${elapsedMs}ms)`);
 if (analysis.warnings.length) for (const w of analysis.warnings) console.error(`warning: ${w}`);

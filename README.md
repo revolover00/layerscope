@@ -82,7 +82,7 @@ python3 -m http.server 8080        # or: npx serve .
   while the fallback decoder holds one layer in memory at a time — released
   after each analysis (worker termination in the browser; GC-able in node) —
   see the memory bench section below
-- **UI:** filterable layer diff lists, wasted-space table with per-path copy counts, efficiency gauge, one-click copy of the creating command, keyboard-accessible dropzone, self-hosted Geist fonts (no CDN)
+- **UI:** filterable layer diff lists, wasted-space table with per-path copy counts, efficiency gauge, Wasted and Reclaimable byte stats (both defined in place), one-click copy of the creating command, keyboard-accessible dropzone, self-hosted Geist fonts (no CDN)
 
 ## What does not work (honestly)
 
@@ -279,7 +279,12 @@ resolved against the squashed lower tree):
   the directory's whole subtree in the squashed lower tree)
 - **discovered** = Σ of occurrence sizes, **minimum** = Σ of per-path minima
 - **efficiency** = minimum / discovered
-- **wasted bytes** = Σ cumulative bytes of paths occurring more than once
+- **wasted bytes** = Σ cumulative bytes of every path occurring more than
+  once or deleted — including the surviving copy (dive's definition,
+  byte-exact, verified against dive's goldens)
+- **reclaimable** = wasted − bytes of the copies that survive in the final
+  squashed image (layerscope's addition — e.g. 5.39 MB wasted → 5.20 MB
+  reclaimable on `test3-zstd.tar`)
 - **user wasted %** = wasted / (total bytes − first layer bytes)
 
 Scores below 1.0 mean some bytes are shipped and then shadowed or deleted by a

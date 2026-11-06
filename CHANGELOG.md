@@ -18,6 +18,13 @@ All notable changes to layerscope are documented here. The format follows
   (private reporting via GitHub Security advisories), this changelog
 - PR + issue templates, `dependabot.yml` (github-actions and npm, weekly),
   `.editorconfig`, `.gitattributes`
+- **Reclaimable** metric: `reclaimableBytes` in the analysis output and in
+  `tools/analyze.mjs` output; shown as a clearly-labelled summary stat card
+  and scorecard row, defined in place (wasted minus the copies that survive
+  in the final squashed image). `Wasted` keeps dive's definition unchanged —
+  still verified byte-exact against dive's goldens (17/17)
+- Unit tests pinning both metrics on synthetic images
+  (`tests/reclaimable.test.mjs`)
 
 ### Fixed
 
@@ -30,6 +37,12 @@ All notable changes to layerscope are documented here. The format follows
   analysis flow in headless Chromium (`Browser benchmark` failed at the
   first-analysis step on both branch and main). It will be re-introduced
   only behind a green browser-bench run.
+- Layer-diff kind badge was truncated to four characters ("ADDE"); the
+  badge column now fits ADDED / MODIFIED / DELETED
+- Wasted stat explains the definition in place (tooltip + sub-line) and
+  points at Reclaimable; the wasted-space panel documents the exact dive
+  formula and the reclaimable rule; README explains both metrics with the
+  `test3-zstd.tar` example (5.39 MB wasted, 3.6% efficiency, 5.20 MB reclaimable)
 
 [unreleased]: https://github.com/revolover00/layerscope/commits/main
 

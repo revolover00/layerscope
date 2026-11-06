@@ -306,10 +306,11 @@ code {
 
 .summary-stats { display: flex; gap: 34px; align-items: center; justify-content: flex-end; }
 .stat { display: flex; flex-direction: column; gap: 4px; min-width: 104px; }
-.stat-label { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--dim-2); }
+.stat-label { font-family: var(--mono); font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--dim-2); cursor: help; }
 .stat-value { font-family: var(--mono); font-size: 23px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .stat-sub { color: var(--dim-2); font-size: 11px; max-width: 150px; line-height: 1.4; }
 .stat-warn { color: var(--red); }
+.stat-ok { color: var(--green); }
 
 .stat-gauge { align-items: center; }
 .gauge { position: relative; width: 96px; height: 96px; }
@@ -437,12 +438,12 @@ code {
   max-height: 430px; overflow: auto; background: var(--panel-2);
 }
 .file-row {
-  display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center;
+  display: grid; grid-template-columns: 70px 1fr auto; gap: 10px; align-items: center;
   padding: 8px 12px; border-bottom: 1px solid #161616; font-size: 12px;
 }
 .file-row:last-child { border-bottom: 0; }
 .file-row:hover { background: #181818; }
-.file-kind { font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: .1em; text-align: center; border-radius: 4px; padding: 3px 0; }
+.file-kind { font-family: var(--mono); font-size: 9.5px; font-weight: 600; letter-spacing: .08em; text-align: center; border-radius: 4px; padding: 3px 0; white-space: nowrap; }
 .kind-added { color: var(--green); background: var(--green-soft); }
 .kind-modified { color: var(--yellow); background: var(--yellow-soft); }
 .kind-deleted { color: var(--red); background: var(--red-soft); }

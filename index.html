@@ -115,7 +115,8 @@
 
       <div class="summary-stats">
         <div class="stat"><span class="stat-label">Total size</span><span id="stat-total" class="stat-value">—</span><span class="stat-sub">sum of layer tar-header bytes</span></div>
-        <div class="stat"><span class="stat-label">Wasted</span><span id="stat-wasted" class="stat-value stat-warn">—</span><span class="stat-sub">bytes in duplicated/removed files</span></div>
+        <div class="stat"><span class="stat-label" title="dive's definition: total bytes of every file that is seen in more than one layer or was deleted — including the copy that still exists in the final image (the surviving copy).">Wasted</span><span id="stat-wasted" class="stat-value stat-warn">—</span><span class="stat-sub">dive's waste estimate — surviving copies included</span></div>
+        <div class="stat"><span class="stat-label" title="Bytes you could actually get back by flattening the image: wasted bytes minus the copies that survive in the final squashed image.">Reclaimable</span><span id="stat-reclaimable" class="stat-value stat-ok">—</span><span class="stat-sub">wasted minus the surviving copies</span></div>
         <div class="stat stat-gauge">
           <div class="gauge" role="img" aria-label="Efficiency score">
             <svg viewBox="0 0 120 120" width="96" height="96">
@@ -218,17 +219,19 @@
       <div class="wasted-top">
         <div class="wasted-explainer">
           <h3>Why files can be “wasted”</h3>
-          <p>Docker layers are immutable. When a later layer <em>overwrites</em> or <em>deletes</em> a file, the old bytes stay in the earlier layer forever. dive and layerscope count every occurrence of a path across layers; an image is efficient when few paths appear in multiple layers.</p>
+          <p>Docker layers are immutable. When a later layer <em>overwrites</em> or <em>deletes</em> a file, the old bytes stay in the earlier layer forever. dive and layerscope count every occurrence of a path across layers; an image is efficient when few paths appear in multiple layers. <strong>Wasted</strong> is dive's number — it deliberately includes the copy that still exists, which keeps layerscope comparable with dive. <strong>Reclaimable</strong> is the smaller number you actually get back if you flatten the image into one layer.</p>
           <ul class="formula-list">
             <li><span class="formula-key">efficiency</span><span>Σ min(occurrence sizes) ÷ Σ cumulative sizes</span></li>
-            <li><span class="formula-key">wasted bytes</span><span>Σ cumulative size of paths seen in ≥ 2 layers</span></li>
+            <li><span class="formula-key">wasted bytes</span><span>dive's definition: total bytes of every path seen in ≥ 2 layers or deleted — surviving copy included</span></li>
+            <li><span class="formula-key">reclaimable</span><span>wasted bytes − bytes of the copies that survive in the final squashed image</span></li>
             <li><span class="formula-key">wasted %</span><span>wasted bytes ÷ (image size − first layer)</span></li>
           </ul>
           <p class="fine-print">Whiteouts of removed directories are sized from the squashed filesystem below them. Opaque markers (<code>.wh..wh..opq</code>) hide lower files without counting as deletions. Sizes are tar-header sizes; hardlinks count as 0.</p>
         </div>
         <div class="wasted-scorecard">
           <div class="ws-row"><span class="ws-cap">Efficiency score</span><span id="ws-efficiency" class="ws-num">—</span></div>
-          <div class="ws-row"><span class="ws-cap">Wasted bytes</span><span id="ws-wasted" class="ws-num ws-warn">—</span></div>
+          <div class="ws-row"><span class="ws-cap" title="dive's definition: total bytes of every path seen in ≥ 2 layers or deleted — surviving copy included, so this number stays comparable with dive.">Wasted bytes</span><span id="ws-wasted" class="ws-num ws-warn">—</span></div>
+          <div class="ws-row"><span class="ws-cap" title="wasted bytes minus the copies that survive in the final squashed image — the bytes you actually get back by flattening the image.">Reclaimable</span><span id="ws-reclaimable" class="ws-num ws-ok">—</span></div>
           <div class="ws-row"><span class="ws-cap">Wasted vs user layers</span><span id="ws-userpct" class="ws-num">—</span></div>
           <div class="ws-row"><span class="ws-cap">Duplicated paths</span><span id="ws-paths" class="ws-num">—</span></div>
         </div>
