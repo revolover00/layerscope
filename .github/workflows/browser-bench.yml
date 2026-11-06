@@ -1,0 +1,56 @@
+name: Browser benchmark
+
+# Measures layerscope end-to-end in a real browser (Chromium via playwright-core):
+# cold (first analysis, incl. WASM fetch/compile/init) and warm wall-clock times,
+# on two zstd images — one built from a REAL compressible layer (an exported
+# alpine rootfs recompressed with zstd) and the 62 MiB incompressible synthetic.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  browser-bench:
+    name: real-browser cold/warm analysis times
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Build zstd test images
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/bench
+          # REAL compressible layer: export an alpine rootfs, recompress with zstd
+          docker pull alpine:3.20
+          cid=$(docker create alpine:3.20)
+          docker export "$cid" -o /tmp/alpine-rootfs.tar
+          docker rm "$cid"
+          ls -la /tmp/alpine-rootfs.tar
+          node tools/ci/build-zstd-oci.mjs --rootfs /tmp/alpine-rootfs.tar --out /tmp/bench/alpine-rootfs-zstd.tar --tag alpine:3.20
+          # pathological case: 62 MiB of incompressible random data, zstd
+          node tools/ci/build-incompressible-zstd.mjs --out /tmp/bench/bench64-zstd.tar
+          ls -la /tmp/bench
+
+      - name: Install Chromium (playwright-core)
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Serve the site and measure cold/warm analysis in real Chromium
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8321 --bind 127.0.0.1 >/tmp/http.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          curl -fsS -o /dev/null http://127.0.0.1:8321/index.html
+          node tools/browser-bench.mjs --url http://127.0.0.1:8321 \
+            --image /tmp/bench/alpine-rootfs-zstd.tar \
+            --image /tmp/bench/bench64-zstd.tar

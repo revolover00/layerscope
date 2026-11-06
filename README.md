@@ -228,17 +228,34 @@ analyzing with `node tools/analyze.mjs` / in-memory blob (blob already resident)
 | archive                                        | size    | layers | result                              | time     |
 |------------------------------------------------|---------|--------|-------------------------------------|----------|
 | synthetic OCI-save, gzip, 6 layers (62 MiB)¹    | 62.0 MB | 6      | eff. 99.9999%, wasted 136 B         | 434–471 ms |
+| synthetic OCI-save, zstd, 6 layers (62 MiB)¹    | 62.0 MB | 6      | eff. 99.9999%, wasted 136 B         | 167–216 ms cold (module init included); 115–148 ms warm |
 | add-delete.legacy.tar                          | 2.0 MB  | 3      | eff. 0.00%, wasted 2,097,152 B      | ~8 ms    |
 | add-delete.oci-archive.gzip.tar                | 2.0 MB  | 3      | eff. 0.00%, wasted 2,097,152 B      | ~21 ms   |
 | multi-waste.legacy.tar                         | 2.0 MB  | 3      | eff. 100.00%, wasted 0 B            | ~9 ms    |
 | overwrite.legacy.tar                           | 1.0 MB  | 3      | eff. 50.00%, wasted 1,048,689 B     | ~6 ms    |
 
-Heap growth during the 62 MB analysis: ~1.2 MiB (measured with
-`--expose-gc`; file bytes are never retained). Browser timings will differ; the bundled sample is 92 KiB and analyzes in
-milliseconds.
-¹ Synthetic 6-layer OCI-save archive (gzip) generated with `tools/synth-lib.mjs`
-(~10.3 MiB of incompressible random data per layer, plus a 68-byte file duplicated
-across two layers). Content is random, so gzip achieves almost nothing.
+No speed advantage for zstd over gzip is claimed on real compressible data: the
+62 MiB fixture above is random (incompressible), so both decoders do about as
+much work. Decode-rate comparisons on realistic compressible content are only
+meaningful per-payload; the browser benchmark in `browser-bench.yml` measures
+cold/warm zstd analysis of a recompressed alpine rootfs for exactly this reason.
+
+Memory on the zstd fallback path: `heapUsed` alone is misleading because the
+vendored WASM decoder lives in linear (ArrayBuffer/external) memory. Measured
+with `tools/bench-memory.mjs` (`node --expose-gc`, the same 62 MiB zstd fixture,
+fresh process, WASM module cold, peak sampled inside `onProgress`):
+
+- `arrayBuffers` 0.01 → 62.0 MB (file Buffer + copies) → 124.1 MB during analysis → 82.7 MB after GC (+20.7 MB retained: grown WASM linear memory + module; warm-module runs return to +0.2 MB after GC)
+- `rss` 45.7 → 107.9 MB after file load → 219–226 MB during analysis → 181–220 MB after GC (+73 to +112 MB over before analysis)
+- `heapUsed` delta ≤ +0.8 MB — reporting heapUsed alone would miss ~120 MB of RSS growth
+- the outer archive Buffer accounts for the rest; file bytes are never retained after analysis
+
+Browser timings will differ; the bundled sample is 92 KiB and analyzes in milliseconds.
+¹ Synthetic 6-layer OCI-save archive (gzip: `tools/synth-lib.mjs`; zstd:
+`tools/ci/build-incompressible-zstd.mjs`), ~10.3 MiB of incompressible random
+data per layer plus a 68-byte file duplicated across two layers. Content is
+random, so compression achieves almost nothing — these rows describe decode+parse
+cost on incompressible bytes, not on typical images.
 
 ## Repository layout
 
@@ -255,7 +272,11 @@ src/core/zstd.js        lazy zstd loader (native DecompressionStream, else vendo
 src/core/model.js       FileTree, whiteouts, squash/merge
 src/core/analyze.js     archive orchestration + dive-compatible analysis
 src/core/format.js      byte/percent formatting
-tools/                  fixture synth, golden verification, comparison, smoke test
+tools/                  fixture synth, golden verification, comparison, smoke test, benchmarks
+tools/ci/               CI-only helpers (build zstd OCI fixtures)
+tools/browser-bench.mjs real-browser cold/warm analysis times (Chromium, used by browser-bench.yml)
+tools/bench-memory.mjs  rss + arrayBuffers memory bench for the zstd fallback path
+tools/check-real-images.sh  pull public images, compare vs dive CLI (used by ci.yml real-images job)
 tests/                  node --test unit tests
 LICENSE                 MIT
 samples/                Dockerfiles used by CI (add-delete, overwrite, multi-waste, clean)

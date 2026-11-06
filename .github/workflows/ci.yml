@@ -98,3 +98,27 @@ jobs:
               echo "dive --ci rejected ${name} as expected"
             fi
           done
+  real-images:
+    name: real public images vs the real dive CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Install dive v0.13.1
+        run: |
+          curl -fsSL -o /tmp/dive.tar.gz \
+            https://github.com/wagoodman/dive/releases/download/v0.13.1/dive_0.13.1_linux_amd64.tar.gz
+          tar -xzf /tmp/dive.tar.gz -C /tmp
+          chmod +x /tmp/dive
+          /tmp/dive --version
+
+      - name: Pull real images, docker save, compare vs dive (every diff printed; tolerances unloosened)
+        run: DIVE=/tmp/dive tools/check-real-images.sh
