@@ -67,8 +67,8 @@
 
     <div class="hero-alt">
       <span>Nothing to test with?</span>
-      <button id="demo-btn" class="btn btn-primary" type="button">Analyze a sample image</button>
-      <span class="hero-alt-note">a small synthetic <code>add → modify → delete</code> image, built locally</span>
+      <button id="sample-btn" class="btn btn-primary" type="button">Try a sample image</button>
+      <span class="hero-alt-note">bundled <code>layerscope/sample:latest</code> (92&nbsp;KiB) — a real <code>add → modify → delete</code> docker&nbsp;save archive</span>
     </div>
 
     <ul class="hero-facts">
@@ -121,6 +121,10 @@
       </div>
     </div>
 
+    <div id="platform-row" class="platform-row" hidden>
+      <span id="platform-title" class="platform-title"></span>
+      <span id="platform-chips" class="platform-chips" role="group" aria-label="Choose platform"></span>
+    </div>
     <div id="warnings" class="warnings" hidden></div>
 
     <div class="tabs" role="tablist" aria-label="Analysis views">
