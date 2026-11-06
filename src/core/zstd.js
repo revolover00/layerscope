@@ -78,7 +78,38 @@ async function importFresh() {
  *             reload is required to release it (documented in README).
  */
 export async function createZstd() {
-  if (isBrowser()) return loadZstd();
+  if (isBrowser()) {
+    // One module worker per analysis — see src/core/zstd.worker.js. The
+    // worker owns a FRESH WASM instance and is terminated after the analysis,
+    // deterministically releasing the linear memory (it never shrinks in
+    // place). A shared page-wide instance is NOT safe here: Chromium produced
+    // different bytes decoding the same frame on its second use.
+    const worker = new Worker(new URL('./zstd.worker.js', import.meta.url), { type: 'module' });
+    let seq = 0;
+    const pending = new Map();
+    const failAll = (err) => {
+      for (const p of pending.values()) p.reject(err);
+      pending.clear();
+    };
+    worker.onmessage = (e) => {
+      const { id, ok, bytes, error } = e.data || {};
+      const p = pending.get(id);
+      if (!p) return;
+      pending.delete(id);
+      if (ok) p.resolve(new Uint8Array(bytes));
+      else p.reject(new Error(error));
+    };
+    worker.onerror = (e) => failAll(new Error(`zstd worker failed: ${e.message || 'unknown error'}`));
+    return {
+      decompress: (u8, { defaultHeapSize } = {}) => new Promise((resolve, reject) => {
+        const id = ++seq;
+        pending.set(id, { resolve, reject });
+        // zero-copy hand-off of the layer bytes into the worker
+        worker.postMessage({ id, buffer: u8.buffer, offset: u8.byteOffset, length: u8.byteLength, defaultHeapSize }, [u8.buffer]);
+      }),
+      terminate: () => worker.terminate(),
+    };
+  }
   try {
     return await importFresh();
   } catch (err) {
@@ -154,12 +185,12 @@ export function zstdFrameContentSize(bytes) {
 export async function decompressZstd(bytes, { module: modOverride = null, defaultHeapSize = 16 * 1024 * 1024, maxBytes = null } = {}) {
   const mod = modOverride ?? await loadZstd();
   try {
-    return mod.decompress(bytes, { defaultHeapSize });
+    return await mod.decompress(bytes, { defaultHeapSize });
   } catch (err) {
     if (maxBytes != null && defaultHeapSize < maxBytes) {
       // FCS was absent and the real output did not fit the first attempt.
       // Retry at the cap: memory stays bounded by maxBytes no matter what.
-      return mod.decompress(bytes, { defaultHeapSize: maxBytes });
+      return await mod.decompress(bytes, { defaultHeapSize: maxBytes });
     }
     throw err;
   }
