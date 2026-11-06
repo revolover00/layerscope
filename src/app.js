@@ -1,8 +1,7 @@
 // layerscope — UI orchestration. All analysis happens locally in the tab.
 
-import { analyzeImage } from './core/analyze.js';
+import { analyzeImage, formatPlatform } from './core/analyze.js';
 import { formatBytes, formatPercent, formatCount, formatPercentBig } from './core/format.js';
-import { buildDemoImage } from './demo.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -15,6 +14,9 @@ const state = {
   topScope: 'layers',
   wastedFilter: '',
   rowLimit: 400,
+  blob: null,       // kept so a multi-platform OCI index can be re-analyzed on demand
+  label: '',
+  platform: null,
 };
 
 // ---------------- helpers ----------------
@@ -58,7 +60,7 @@ function showError(message) {
 
 // ---------------- analysis flow ----------------
 
-async function analyze(blob, label) {
+async function analyze(blob, label, platform = null) {
   const overlay = $('#progress-overlay');
   overlay.hidden = false;
   setProgress(0.02, 'Reading archive index…', label || '');
@@ -66,6 +68,7 @@ async function analyze(blob, label) {
   try {
     const analysis = await analyzeImage(blob, {
       topLimit: 20,
+      platform,
       onProgress: (p) => {
         if (p.phase === 'scan') setProgress(0.06, p.detail || 'Reading archive index…', label);
         else if (p.phase === 'layer') {
@@ -75,6 +78,9 @@ async function analyze(blob, label) {
       },
     });
     state.analysis = analysis;
+    state.blob = blob;
+    state.label = label || '';
+    state.platform = platform;
     state.selectedLayer = 0;
     state.fileKind = 'all';
     state.fileFilter = '';
@@ -91,6 +97,32 @@ async function analyze(blob, label) {
     showView('landing');
     showError(err && err.message ? err.message : String(err));
   }
+}
+
+// ---------------- render: platform picker (multi-platform OCI indexes) ----------------
+
+function renderPlatformPicker(a) {
+  const row = $('#platform-row');
+  if (!row) return;
+  const platforms = Array.isArray(a.platforms) ? a.platforms : [];
+  if (platforms.length < 2) { row.hidden = true; return; }
+  const selected = (platforms.find((p) => p.selected) || platforms[0]);
+  $('#platform-title').textContent = `Multi-platform image — analyzed ${formatPlatform(selected)}.`;
+  const chips = $('#platform-chips');
+  chips.innerHTML = '';
+  for (const p of platforms) {
+    const name = formatPlatform(p);
+    const btn = el('button', 'platform-chip' + (p.selected ? ' is-active' : ''), name);
+    btn.type = 'button';
+    btn.setAttribute('aria-pressed', p.selected ? 'true' : 'false');
+    if (p.selected) btn.disabled = true;
+    btn.addEventListener('click', () => {
+      if (p.selected || !state.blob) return;
+      analyze(state.blob, state.label, name);
+    });
+    chips.appendChild(btn);
+  }
+  row.hidden = false;
 }
 
 // ---------------- render: overview ----------------
@@ -112,6 +144,8 @@ function renderAnalysis(a, label) {
   gauge.classList.remove('good', 'ok', 'bad');
   gauge.classList.add(score >= 0.95 ? 'good' : score >= 0.8 ? 'ok' : 'bad');
   $('#gauge-value').textContent = `${(score * 100).toFixed(1)}%`;
+
+  renderPlatformPicker(a);
 
   // warnings
   const warnBox = $('#warnings');
@@ -409,17 +443,20 @@ dropzone.addEventListener('drop', (e) => {
   if (file) analyze(file, file.name);
 });
 
-$('#demo-btn').addEventListener('click', async () => {
+$('#sample-btn').addEventListener('click', async () => {
   const overlay = $('#progress-overlay');
   overlay.hidden = false;
-  setProgress(0.05, 'Building demo image…', 'synthetic docker save archive');
+  setProgress(0.05, 'Loading sample image…', 'bundled layerscope/sample:latest');
   try {
-    const demo = await buildDemoImage();
-    await analyze(demo, 'layerscope/demo:latest');
+    const res = await fetch('assets/samples/layerscope-demo.tar', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`sample archive failed to load (HTTP ${res.status})`);
+    const sample = await res.blob();
+    await analyze(sample, 'layerscope/sample:latest');
   } catch (err) {
     console.error(err);
     overlay.hidden = true;
-    showError(`Demo image could not be built: ${err.message}`);
+    showView('landing');
+    showError(`Sample image could not be loaded: ${err && err.message ? err.message : err}`);
   }
 });
 
