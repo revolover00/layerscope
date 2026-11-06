@@ -9,6 +9,7 @@ import { analyzeImage } from '../src/core/analyze.js';
 import zlib from 'node:zlib';
 
 import { synthesize } from '../tools/synth.mjs';
+import { buildFixtureAsync } from '../tools/fixtures.mjs';
 
 class MemBlob {
   constructor(buf) { this.buf = buf; this.size = buf.length; }
@@ -122,4 +123,18 @@ test('a zstd-wrapped outer archive (.tar.zst) is rejected with a targeted messag
     () => analyzeImage(new MemBlob(wrapped)),
     /zstd-compressed/,
   );
+});
+
+test('zstd-compressed layers analyze identically to the uncompressed one', async () => {
+  // Property: compression must not change the analysis. The vendored wasm
+  // decoder (or the native DecompressionStream where present) must produce
+  // the same diffIDs, wasted bytes and efficiency score.
+  const a = await analyzeImage(new MemBlob(await buildFixtureAsync('oci-save')));
+  const b = await analyzeImage(new MemBlob(await buildFixtureAsync('oci-save-zstd')));
+  assert.equal(b.layerCount, a.layerCount);
+  assert.deepEqual(b.layers.map((l) => l.digestId), a.layers.map((l) => l.digestId));
+  assert.equal(b.wastedBytes, a.wastedBytes);
+  assert.equal(b.efficiency, a.efficiency);
+  assert.equal(b.totalSizeBytes, a.totalSizeBytes);
+  assert.deepEqual(b.topLayerEntries, a.topLayerEntries);
 });
