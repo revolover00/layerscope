@@ -1,7 +1,7 @@
 // layerscope — UI orchestration. All analysis happens locally in the tab.
 
 import { analyzeImage } from './core/analyze.js';
-import { formatBytes, formatPercent, formatCount } from './core/format.js';
+import { formatBytes, formatPercent, formatCount, formatPercentBig } from './core/format.js';
 import { buildDemoImage } from './demo.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -203,7 +203,7 @@ function currentRows() {
   const layer = state.analysis.layers[state.selectedLayer];
   const rows = [];
   for (const e of layer.added) rows.push({ kind: 'added', path: e.path, size: e.size });
-  for (const e of layer.modified) rows.push({ kind: 'modified', path: e.path, size: e.size, oldSize: e.oldSize, oldType: e.oldType });
+  for (const e of layer.modified) rows.push({ kind: 'modified', path: e.path, size: e.size, oldSize: e.oldSize, oldType: e.oldType, type: e.type });
   for (const e of layer.deleted) rows.push({ kind: 'deleted', path: e.path, size: 0, whiteout: e.whiteoutPath, directory: e.directory, targetKnown: e.targetKnown, removedBytes: e.removedBytes });
   for (const e of layer.opaqued) rows.push({ kind: 'deleted', path: e.path, size: 0, opaque: true });
   rows.sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
@@ -236,7 +236,9 @@ function renderFileList() {
     const path = el('span', 'file-path', r.path);
     path.title = r.opaque ? `opaque marker — contents of ${r.path} hidden from lower layers` : r.whiteout ? `whiteout: ${r.whiteout}` : r.path;
     let meta;
-    if (r.kind === 'modified') {
+    if (r.kind === 'modified' && (r.type === 'dir' || r.oldType === '5')) {
+      meta = el('span', 'file-meta', 'directory');
+    } else if (r.kind === 'modified') {
       meta = el('span', 'file-meta');
       const old = el('s', '', formatBytes(r.oldSize));
       meta.appendChild(old);
@@ -295,7 +297,7 @@ function renderWasted() {
 
   $('#ws-efficiency').textContent = formatPercent(a.efficiency, 1);
   $('#ws-wasted').textContent = formatBytes(a.wastedBytes);
-  $('#ws-userpct').textContent = formatPercent(a.wastedUserPercent, 1);
+  $('#ws-userpct').textContent = formatPercentBig(a.wastedUserPercent);
   $('#ws-paths').textContent = formatCount(a.inefficiencies.length);
 
   const tbody = $('#wasted-tbody');

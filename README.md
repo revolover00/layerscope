@@ -141,6 +141,24 @@ DIVE=/path/to/dive tools/check-samples.sh
 demo button and walks the whole analysis view — layers, tabs, filters, gauge —
 asserting the DOM updates. `npm install && npm run smoke` → `SMOKE TEST PASSED`.
 
+### Browser check (headless Chromium)
+
+Verified by driving a real Chromium (via playwright-core and
+`@sparticuz/chromium`, 1440×900 viewport, against the staged site that
+`pages.yml` deploys). It found a critical bug jsdom could not see:
+
+- **The progress overlay intercepted every pointer event** — the `.overlay`
+  rule's `display: flex` overrode the `[hidden]` UA rule, so the "Analyzing…"
+  card covered the page even when hidden, making the live site unusable.
+  Fixed globally with `[hidden] { display: none !important; }`.
+
+Other fixes from the same pass: deleted-file rows now show the actual
+lower-layer size ("file · 1.50 MB hidden below"), modified directories render
+as "directory" instead of "0 B → 0 B", whiteout/opaque markers are excluded
+from top-largest-file lists, and extreme user-wasted ratios render grouped
+("2,042,740%"). Zero console/page errors were observed across the landing,
+layers, wasted-space and top-files views after the fixes.
+
 ## How the efficiency score is computed
 
 For every path, across layers in build order (leaf nodes only, whiteouts

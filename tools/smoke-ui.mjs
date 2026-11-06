@@ -72,7 +72,7 @@ if (ready) {
   assert(!$('panel-top').hidden, 'top panel visible');
   const topRows = window.document.querySelectorAll('#top-tbody tr');
   assert(topRows.length >= 1 && topRows.length <= 20, `top files rows within range: ${topRows.length}`);
-  assert(topRows.length === 7, `demo image has exactly 7 largest-entry rows: ${topRows.length}`);
+  assert(topRows.length === 6, `demo image has exactly 6 largest-entry rows (whiteouts excluded): ${topRows.length}`);
   console.log('   top file row 1:', window.document.querySelector('#top-tbody tr').textContent.replace(/\s+/g, ' ').trim());
 
   // switch top scope to final image
