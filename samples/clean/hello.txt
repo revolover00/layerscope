@@ -1,0 +1,3 @@
+layerscope sample image
+This image is intentionally minimal: a single scratch layer with one small file.
+Analyzing it should report 100% efficiency and zero wasted bytes.

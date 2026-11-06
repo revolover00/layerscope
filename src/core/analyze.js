@@ -23,6 +23,20 @@ import {
   baseName,
 } from './model.js';
 
+// Keeps the biggest K items seen so far, bounded memory for huge images.
+class TopK {
+  constructor(k, cmp) { this.k = k; this.cmp = cmp; this.items = []; }
+  add(item) {
+    this.items.push(item);
+    if (this.items.length > 4 * this.k) this.trim();
+  }
+  trim() {
+    this.items.sort(this.cmp);
+    if (this.items.length > this.k) this.items.length = this.k;
+  }
+  result() { this.trim(); return this.items; }
+}
+
 const SMALL_FILE_MAX = 4 * 1024 * 1024; // collect tiny metadata files in pass 1
 const COLLECT_PATHS = new Set(['manifest.json', 'index.json', 'oci-layout', 'repositories']);
 const ROOT_CONFIG_RE = /^[0-9a-f]{64}\.json$/;
@@ -176,8 +190,10 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
   const pathStats = new Map(); // path -> { count, cumulative, min }
   let pathOrder = [];
   let totalSizeBytes = 0;
-  const allLargestEntries = []; // { path, size, layer }
-  const finalEntries = [];      // explicit nodes in final image (for top-files view)
+  // top-N trackers: keep only the biggest K entries (bounded memory)
+  const allLargestEntries = new TopK(topLimit, (a, b) => b.size - a.size || (a.path < b.path ? -1 : 1));
+  const finalEntries = new TopK(topLimit, (a, b) => b.size - a.size || (a.path < b.path ? -1 : 1));
+
 
   const recordOccurrence = (path, size) => {
     let s = pathStats.get(path);
@@ -298,11 +314,10 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
       recordOccurrence(p, node.size);
     }
 
-    // --- largest entries across the whole image (for the top-N list) ---
+    // --- largest entries across the whole image (bounded to the biggest topLimit) ---
     for (const e of entries) {
       if (e.type === 'file' || e.type === 'hardlink') {
-        // keep a bounded reservoir; we sort later
-        allLargestEntries.push({ path: e.path, size: e.size, layer: i });
+        allLargestEntries.add({ path: e.path, size: e.size, layer: i });
       }
     }
 
@@ -333,7 +348,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
   for (const node of squashed.map.values()) {
     if (!node.explicit) continue;
     if (node.type === 'file' || node.type === 'hardlink') {
-      finalEntries.push({ path: node.path, size: node.size, type: node.type });
+      finalEntries.add({ path: node.path, size: node.size, type: node.type });
     }
   }
 
@@ -357,8 +372,6 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
   const userSizeBytes = totalSizeBytes - firstLayerSize;
   const wastedUserPercent = userSizeBytes > 0 ? wastedBytes / userSizeBytes : 0;
 
-  allLargestEntries.sort((a, b) => b.size - a.size || (a.path < b.path ? -1 : 1));
-  finalEntries.sort((a, b) => b.size - a.size || (a.path < b.path ? -1 : 1));
 
   return {
     format,
@@ -372,8 +385,8 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
     efficiency,
     inefficiencies,
     layers,
-    topLayerEntries: allLargestEntries.slice(0, topLimit),
-    topFinalFiles: finalEntries.slice(0, topLimit),
+    topLayerEntries: allLargestEntries.result(),
+    topFinalFiles: finalEntries.result(),
     compressedArchiveBytes: blob.size,
   };
 }
