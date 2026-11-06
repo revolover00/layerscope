@@ -18,7 +18,7 @@ import zlib from 'node:zlib';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadZstd, createZstd } from '../src/core/zstd.js';
+import { decodeZstdCapped } from '../src/core/zstd-decode.js';
 import { analyzeImage } from '../src/core/analyze.js';
 import { synthesizeRawAsync, mulberry32 } from './synth-lib.mjs';
 
@@ -42,14 +42,13 @@ const sha = (b) => createHash('sha256').update(b).digest('hex');
 console.log(`soak: frame=${frame.length}B iterations=${ITERATIONS} analyses=${ANALYSES}`);
 console.log(`soak: sha256(uncompressed layer) = ${expectedSha}`);
 
-// ---------- Phase A: one shared instance, N sequential decompresses ----------
-const mod = await loadZstd();
+// ---------- Phase A: N sequential streaming decodes through the app's fallback ----------
 let ok = 0;
 const divergence = [];
 for (let i = 1; i <= ITERATIONS; i++) {
   let out = null;
   try {
-    out = mod.decompress(frame, { defaultHeapSize: SIZE + 64 });
+    out = decodeZstdCapped(new Uint8Array(frame), { maxBytes: SIZE * 2 });
   } catch (err) {
     divergence.push({ iteration: i, error: err.message });
     if (divergence.length <= 3) console.error(`  MISMATCH (throw) at #${i}: ${err.message}`);
@@ -61,7 +60,7 @@ for (let i = 1; i <= ITERATIONS; i++) {
     if (divergence.length <= 3) console.error(`  MISMATCH (sha256) at #${i}`);
   }
 }
-console.log(`phase A (one shared instance × ${ITERATIONS}): ok=${ok} divergence=${divergence.length}`);
+console.log(`phase A (shared fallback decoder × ${ITERATIONS}): ok=${ok} divergence=${divergence.length}`);
 
 // ---------- Phase B: analyze the same archive M times, compare fingerprints --
 const dir = mkdtempSync(join(tmpdir(), 'layerscope-soak-'));

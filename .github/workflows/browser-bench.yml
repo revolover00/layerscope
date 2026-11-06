@@ -1,9 +1,10 @@
 name: Browser benchmark
 
 # Measures layerscope end-to-end in a real browser (Chromium via playwright-core):
-# cold (first analysis, incl. WASM fetch/compile/init) and warm wall-clock times,
-# on two zstd images — one built from a REAL compressible layer (an exported
-# alpine rootfs recompressed with zstd) and the 62 MiB incompressible synthetic.
+# cold (first analysis) and warm wall-clock times,
+# on synthetic zstd images, a REAL compressible-layer image (an exported alpine
+# rootfs recompressed with zstd), the REAL python:3.12-slim rootfs as one layer,
+# and a 150 MiB single layer — plus a repeated-analysis consistency test.
 
 on:
   push:
@@ -38,7 +39,7 @@ jobs:
           # pathological case: 62 MiB of incompressible random data, zstd
           node tools/ci/build-incompressible-zstd.mjs --out /tmp/bench/bench64-zstd.tar
           # REAL large image: python:3.12-slim rootfs recompressed as ONE ~119 MB
-          # zstd layer (exercises the WASM one-shot fallback in Chromium)
+          # zstd layer (exercises the fallback decode path in Chromium)
           (docker pull mirror.gcr.io/library/python:3.12-slim || docker pull python:3.12-slim)
           cid=$(docker create mirror.gcr.io/library/python:3.12-slim 2>/dev/null || docker create python:3.12-slim)
           docker export "$cid" -o /tmp/python-rootfs.tar
@@ -48,15 +49,26 @@ jobs:
           node -e "const j=require('/tmp/python-zstd.json'); console.log('::notice::python-rootfs-zstd uncompressedLayerBytes=' + j.uncompressedLayerBytes + ' zstdLayerBytes=' + j.zstdLayerBytes + ' archiveBytes=' + j.archiveBytes + ' ratio=' + j.ratio)"
           # 150 MiB incompressible SINGLE layer (tested size above the python fixture)
           node tools/ci/build-incompressible-zstd.mjs --out /tmp/bench/zstd-1x150.tar --layers 1 --size-mib 150
-          # tiny archive whose zstd layer DECLARES 600 MiB uncompressed (zeros) — fallback limit refusal test
+          # tiny archive whose zstd layer DECLARES 600 MiB uncompressed (zeros) — fallback limit refusal test (FCS present)
           node --input-type=module -e "
-            import { synthesizeRawAsync, randomContent } from './tools/synth-lib.mjs';
+            import { synthesizeRawAsync } from './tools/synth-lib.mjs';
             import { writeFileSync } from 'node:fs';
             const content = Buffer.alloc(600 * 1024 * 1024, 0);
             const buf = await synthesizeRawAsync({ format: 'oci-save', compression: 'zstd', layers: [[{ name: 'data/zeros.bin', content, mode: 0o644 }]], history: [{ created_by: 'RUN dd if=/dev/zero of=/data/zeros.bin bs=1M count=600' }], repoTag: 'layerscope/huge-claims:latest' });
             writeFileSync('/tmp/bench/huge-claims-600mib.tar', buf);
             console.log('huge-claims archive bytes:', buf.length);
           "
+          # SAME but the frame carries NO content size (streamed compression, e.g. containerd/buildx) — refusal must fire mid-decode
+          node --input-type=module -e "
+            import { synthesizeRawAsync } from './tools/synth-lib.mjs';
+            import { writeFileSync } from 'node:fs';
+            const content = Buffer.alloc(600 * 1024 * 1024, 0);
+            const buf = await synthesizeRawAsync({ format: 'oci-save', compression: 'zstd', zstdContentSizeFlag: 0, layers: [[{ name: 'data/zeros.bin', content, mode: 0o644 }]], history: [{ created_by: 'RUN dd if=/dev/zero of=/data/zeros.bin bs=1M count=600' }], repoTag: 'layerscope/huge-claims-nofcs:latest' });
+            writeFileSync('/tmp/bench/huge-claims-nofcs-600mib.tar', buf);
+            console.log('huge-claims-nofcs archive bytes:', buf.length);
+          "
+          # 12-layer incompressible zstd image (~120 MiB uncompressed) — repeated-analysis consistency test in ONE tab
+          node tools/ci/build-incompressible-zstd.mjs --out /tmp/bench/bench12-zstd.tar --layers 12 --per-mib 10
           # soak layer + tiny soak image: deterministic 3 MiB payload (mulberry32 seed 7)
           node --input-type=module -e "
             import { mulberry32 } from './tools/synth-lib.mjs';
@@ -94,3 +106,5 @@ jobs:
           EXPECTED_SHA=$(node --input-type=module -e "import{mulberry32}from'./tools/synth-lib.mjs';import{createHash}from'node:crypto';const r=mulberry32(7);const b=Buffer.alloc(3*1024*1024);for(let i=0;i<b.length;i++)b[i]=(r()*256)|0;console.log(createHash('sha256').update(b).digest('hex'))")
           node tools/browser-soak.mjs --url http://127.0.0.1:8321 --image /tmp/bench/soak-zstd.tar --layer-url /soak-layer.zst --expected-sha256 "$EXPECTED_SHA" --iterations 2000 --analyses 50
           node tools/browser-limit.mjs --url http://127.0.0.1:8321 --image /tmp/bench/huge-claims-600mib.tar
+          node tools/browser-limit.mjs --url http://127.0.0.1:8321 --image /tmp/bench/huge-claims-nofcs-600mib.tar
+          node tools/browser-soak.mjs --url http://127.0.0.1:8321 --image /tmp/bench/bench12-zstd.tar --skip-phase-a --analyses 20

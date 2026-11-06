@@ -39,12 +39,16 @@ class TopK {
 }
 
 const SMALL_FILE_MAX = 4 * 1024 * 1024; // collect tiny metadata files in pass 1
-// Hard upper bound for a single decompressed zstd layer on the one-shot WASM
-// decoder path (browsers without native DecompressionStream('zstd')). The WASM
-// fallback allocates the whole layer inside the WASM heap (input + output both
-// live at once), so an unbounded layer is an allocation-crash / tab-OOM risk.
+// Hard upper bound for a single decompressed zstd layer on the fallback
+// decode path (browsers without native DecompressionStream('zstd')). The
+// fallback materializes the layer in memory (iterTarEntries needs the
+// bytes), so an unbounded layer is an allocation-crash / tab-OOM risk.
 // gzip layers are unaffected — they stream end-to-end. analyzeImage() callers
-// may tune this with the `maxLayerBytes` option. Tested up to the limit on
+// may tune this with the `maxLayerBytes` option. Enforcement:
+//   1. frames WITH a content size are refused BEFORE decoding;
+//   2. every decode — with or without a content size — streams through a
+//      byte-capped decoder that throws mid-flight past maxLayerBytes.
+// Tested up to the limit on
 // node (159 MiB content layer passes, rss ~1021 MB peak; a 160 MiB-content
 // layer whose tar lands 2 KB over the limit is refused BEFORE allocating) and
 // in real Chromium (150 MiB incompressible single layer, see browser-bench).
@@ -73,30 +77,31 @@ async function layerStream(blob, offset, size, compression, maxLayerBytes, zstdS
     return blobReadableStream(blob, offset, offset + size).pipeThrough(new DecompressionStream('gzip'));
   }
   // zstd: prefer the browser's native streaming decoder; otherwise fall back to
-  // the vendored WASM decoder (one-shot over the whole layer — memory grows with
-  // the layer's size, not the archive's; gzip stays fully streaming).
+  // the pure-JS fzstd streaming decoder (bytes bounded mid-decode by maxLayerBytes;
+  // gzip stays fully streaming).
   if (nativeZstdStream()) {
     return blobReadableStream(blob, offset, offset + size).pipeThrough(new DecompressionStream('zstd'));
   }
   const raw = new Uint8Array(await readBlobSlice(blob, offset, offset + size));
   // Enforce the limit BEFORE allocating: if the zstd frame header carries a
-  // content size, refuse upfront without decoding. Otherwise decode with a
-  // hard cap (decompressZstd retries unknown-FCS frames at maxBytes).
+  // content size, refuse upfront without decoding. Otherwise (or in addition)
+  // the decode streams through a byte-capped decoder that throws mid-flight
+  // past maxLayerBytes — see src/core/zstd-decode.js.
   const declared = zstdFrameContentSize(raw);
   if (declared != null && declared > maxLayerBytes) {
     throw new Error(
       `zstd layer declares a decompressed size of ${(declared / 1048576).toFixed(1)} MiB (${declared} bytes), exceeding the ${(maxLayerBytes / 1048576).toFixed(0)} MiB (${maxLayerBytes} bytes) fallback limit — refusing to decode before allocating memory. ` +
-      `The in-browser WASM decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
+      `The in-browser decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
       `analyzeImage() callers can tune the limit via the maxLayerBytes option.`,
     );
   }
-  // one fresh WASM instance per analysis; released in analyzeImage's finally
+  // one decoder session per analysis; released in analyzeImage's finally
   if (!zstdSessionHolder.session) zstdSessionHolder.session = await createZstd();
   const out = await decompressZstd(raw, { module: zstdSessionHolder.session, maxBytes: maxLayerBytes });
   if (out.byteLength > maxLayerBytes) {
     throw new Error(
       `zstd layer decompressed to ${(out.byteLength / 1048576).toFixed(1)} MiB (${out.byteLength} bytes), exceeding the ${(maxLayerBytes / 1048576).toFixed(0)} MiB (${maxLayerBytes} bytes) fallback limit. ` +
-      `The in-browser WASM decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
+      `The in-browser decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
       `analyzeImage() callers can tune the limit via the maxLayerBytes option.`,
     );
   }
@@ -135,7 +140,7 @@ function alignHistory(history, layerCount) {
 }
 
 export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20, platform = null, maxLayerBytes = DEFAULT_MAX_LAYER_BYTES } = {}) {
-  const sessionHolder = { session: null }; // per-analysis WASM instance — dropped in `finally`
+  const sessionHolder = { session: null }; // per-analysis decoder session — dropped in `finally`
   try {
   const warnings = [];
   const progress = (phase, detail) => onProgress({ phase, ...(detail || {}) });
@@ -437,7 +442,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
   }
 
   // ---------------- integrity: decompressed zstd layers vs config rootfs.diff_ids ----------------
-  // Only the WASM fallback path hashed layers (the layer is fully in memory
+  // Only the in-memory decoder fallback path hashed layers (the layer is fully in memory
   // there). gzip / plain-tar / native-zstd layers are streamed and cannot be
   // hashed without buffering them — they remain unverified (see README).
   if (diffIds.length) {

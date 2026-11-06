@@ -1,82 +1,42 @@
-// Shared WASM zstd support.
+// zstd support.
 //
-// Strategy per environment (per-analysis isolation — see README "Decoder
-// integrity"):
-//   browser:  a one-module Web Worker per analysis (src/core/zstd.worker.js);
-//             own global scope ⇒ a fresh, pristine WASM instance; the analysis
-//             terminates the worker in analyzeImage()'s finally, which
-//             deterministically destroys the linear memory (it never shrinks
-//             in place).
-//   node:     require() the "@bokuweb/zstd-wasm" CJS build (devDependency,
-//             installed by `npm ci` for the tools) fresh per analysis — the
-//             whole package require-cache subtree is busted, and evicted
-//             again after the require so the instance is collectable.
+// Strategy per environment:
+//   browser:  one module Web Worker per analysis (src/core/zstd.worker.js)
+//             around the pure-JS fzstd streaming decoder (see
+//             src/core/zstd-decode.js) — never blocks the UI, and the
+//             terminate() in analyzeImage()'s finally destroys it with the
+//             analysis.
+//   node:     the same decoder inline — fzstd is stateless across decodes,
+//             so a fresh "session" object holds no memory worth releasing;
+//             the reference is simply dropped in analyzeImage()'s finally.
 //
-// Two instance flavors:
-//   createZstd() — a fresh decoder per analysis (see above).
-//   loadZstd()   — a cached process-wide instance for tools/verifiers that
-//                  decompress many times on purpose.
+// Decoder history (see README "Decoder integrity"): the vendored WASM
+// decoder was REMOVED because in real Chromium the SAME frame decoded to
+// DIFFERENT bytes on its second use in a shared page-wide instance — caught
+// by the rootfs.diff_ids integrity check. fzstd is pure JavaScript with no
+// linear memory, so this failure class cannot occur.
 //
-// A note on one-shot decoding: the vendored decoder is one-shot (no streaming
-// API), so the fallback can never decode "chunk by chunk". Bounds are enforced
-// before/at allocation instead:
-//   1. if the zstd frame header carries a content size (it almost always does
-//      for CLI-produced layers), a layer over the limit is refused BEFORE any
-//      buffer or WASM allocation happens;
-//   2. otherwise the decode is retried with the hard cap — the attempt cannot
-//      allocate more than maxBytes no matter how big the real output is.
-
-let zstdModulePromise = null;
+// Enforcing the limit (both paths):
+//   1. if the zstd frame header carries a content size (it does for CLI-
+//      produced layers), a layer over the limit is refused BEFORE decoding
+//      (zstdFrameContentSize in analyze.js);
+//   2. every decode — with or without a content size — streams through
+//      decodeZstdCapped with maxBytes, which throws the moment the running
+//      total crosses the cap (zstd blocks are ≤128 KiB, so a frame without
+//      a content size can overshoot by at most one block).
 
 function isBrowser() {
   return typeof window !== 'undefined' && typeof document !== 'undefined';
 }
 
-async function importFresh() {
-  const { createRequire } = await import('node:module');
-  const { sep } = await import('node:path');
-  const require = createRequire(import.meta.url);
-  // bust the WHOLE package subtree — the entry alone re-exports the same
-  // cached internals, which would leave every "fresh" instance sharing one
-  // wasm heap (observed: after a few analyses layer-2 decompression failed
-  // with zstd code -72)
-  const marker = `@bokuweb${sep}zstd-wasm${sep}`;
-  for (const key of Object.keys(require.cache)) {
-    if (key.includes(marker)) delete require.cache[key];
-  }
-  const mod = require('@bokuweb/zstd-wasm');
-  // and evict it again: an important side effect of keeping a fresh instance
-  // OUT of the require cache is that once the analysis drops its reference,
-  // the engine can actually reclaim the WASM heap (until GC, it stays live)
-  for (const key of Object.keys(require.cache)) {
-    if (key.includes(marker)) delete require.cache[key];
-  }
-  await mod.init();
-  return mod;
-}
-
 /**
- * The decoder analyzeImage() should use, FRESH per analysis.
- *  - node:    a FRESH CJS instance (the whole require subtree is busted and
- *             evicted). analyzeImage()'s `finally` drops the reference; node
- *             reclaims the WASM heap at GC. Measured: arrayBuffers after GC
- *             returns to the archive size (+0.01 MiB retained, 150 MiB layer).
- *  - browser: a one-module Web Worker per analysis, terminated in
- *             analyzeImage()'s `finally` — the WASM linear memory is destroyed
- *             with the worker (never shrinks in place), so no page reload is
- *             needed to release it. Warm does NOT get a decoder cache for
- *             this reason: cross-analysis reuse demonstrably produced
- *             different bytes for the same frame in Chromium.
- * A fresh page-wide instance per analysis also means: zero degradation on any
- * number of analyses in one tab (browser soak: 50/50 identical fingerprints).
+ * The decoder analyzeImage() should use for ONE analysis.
+ *  - browser: a one-module Web Worker per analysis (see zstd.worker.js).
+ *  - node:    a stateless inline adapter around decodeZstdCapped.
+ * Both return { decompress(u8, { maxBytes }) → Promise<Uint8Array>, terminate() }.
  */
 export async function createZstd() {
   if (isBrowser()) {
-    // One module worker per analysis — see src/core/zstd.worker.js. The
-    // worker owns a FRESH WASM instance and is terminated after the analysis,
-    // deterministically releasing the linear memory (it never shrinks in
-    // place). A shared page-wide instance is NOT safe here: Chromium produced
-    // different bytes decoding the same frame on its second use.
     const worker = new Worker(new URL('./zstd.worker.js', import.meta.url), { type: 'module' });
     let seq = 0;
     const pending = new Map();
@@ -94,30 +54,20 @@ export async function createZstd() {
     };
     worker.onerror = (e) => failAll(new Error(`zstd worker failed: ${e.message || 'unknown error'}`));
     return {
-      decompress: (u8, { defaultHeapSize } = {}) => new Promise((resolve, reject) => {
+      decompress: (u8, { maxBytes } = {}) => new Promise((resolve, reject) => {
         const id = ++seq;
         pending.set(id, { resolve, reject });
         // zero-copy hand-off of the layer bytes into the worker
-        worker.postMessage({ id, buffer: u8.buffer, offset: u8.byteOffset, length: u8.byteLength, defaultHeapSize }, [u8.buffer]);
+        worker.postMessage({ id, buffer: u8.buffer, offset: u8.byteOffset, length: u8.byteLength, maxBytes }, [u8.buffer]);
       }),
       terminate: () => worker.terminate(),
     };
   }
-  try {
-    return await importFresh();
-  } catch (err) {
-    throw new Error(`zstd decoder failed to load: ${err.message || err}`);
-  }
-}
-
-export function loadZstd() {
-  if (!zstdModulePromise) {
-    zstdModulePromise = importFresh().catch((err) => {
-      zstdModulePromise = null; // allow a later retry; report the real reason
-      throw new Error(`zstd decoder failed to load: ${err.message || err}`);
-    });
-  }
-  return zstdModulePromise;
+  const { decodeZstdCapped } = await import('./zstd-decode.js');
+  return {
+    decompress: async (u8, { maxBytes } = {}) => decodeZstdCapped(u8, { maxBytes: maxBytes ?? Number.MAX_SAFE_INTEGER }),
+    terminate: () => {},
+  };
 }
 
 /** True if a native streaming zstd decoder exists in this environment. */
@@ -134,7 +84,7 @@ export function nativeZstdStream() {
 /**
  * Read the frame content size from a zstd frame header, if present.
  * Returns the declared decompressed byte size, or null when the frame
- * carries no FCS field (or cannot be parsed).
+ * carries no FCS field (e.g. streamed compression, containerd/buildx).
  */
 export function zstdFrameContentSize(bytes) {
   if (!bytes || bytes.length < 6) return null;
@@ -168,23 +118,12 @@ export function zstdFrameContentSize(bytes) {
 }
 
 /**
- * One-shot decompress used only when no native streaming decoder exists.
- * opts:
- *   module         — a specific instance (e.g. one created by createZstd())
- *   defaultHeapSize— decode capacity to try first for frames WITHOUT FCS
- *   maxBytes       — hard cap; unknown-FCS frames are retried at this bound so
- *                    the decoder can never allocate more than this
+ * Streaming-capped decompress used only when no native streaming decoder
+ * exists. Always routes through decodeZstdCapped (browser: the per-analysis
+ * worker; node: inline), so EVERY frame — with or without a content size —
+ * is bounded by opts.maxBytes mid-flight.
  */
-export async function decompressZstd(bytes, { module: modOverride = null, defaultHeapSize = 16 * 1024 * 1024, maxBytes = null } = {}) {
-  const mod = modOverride ?? await loadZstd();
-  try {
-    return await mod.decompress(bytes, { defaultHeapSize });
-  } catch (err) {
-    if (maxBytes != null && defaultHeapSize < maxBytes) {
-      // FCS was absent and the real output did not fit the first attempt.
-      // Retry at the cap: memory stays bounded by maxBytes no matter what.
-      return await mod.decompress(bytes, { defaultHeapSize: maxBytes });
-    }
-    throw err;
-  }
+export async function decompressZstd(bytes, { module: modOverride = null, maxBytes = null } = {}) {
+  const mod = modOverride ?? (await createZstd());
+  return mod.decompress(bytes, { maxBytes: maxBytes ?? Number.MAX_SAFE_INTEGER });
 }

@@ -248,7 +248,7 @@
     <div class="footer-col">
       <p class="footer-title">Honest limits</p>
       <ul>
-        <li>zstd layers — supported: natively where the browser provides it, otherwise via the vendored WebAssembly decoder (one layer in memory). The oci-save-zstd fixture passes dive's golden.</li>
+        <li>zstd layers — supported: natively where the browser provides it, otherwise via the bundled pure-JS decoder (one layer in memory). The oci-save-zstd fixture passes dive's golden.</li>
         <li>Whole-archive <code>.tar.gz</code> of a <code>docker save</code> output is not supported — save with uncompressed layers.</li>
         <li>Wasted-space math mirrors <a href="https://github.com/wagoodman/dive" rel="noopener" target="_blank">dive</a>; see README for verified/unverified claims.</li>
         <li>Compared against dive v0.13.1 on the CI sample images — numbers match exactly (see README).</li>

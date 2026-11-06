@@ -180,22 +180,15 @@ function compressLayersSync(spec, layerTars) {
 async function compressLayersAsync(spec, layerTars) {
   if (spec.compression !== 'zstd') return compressLayersSync(spec, layerTars);
   if (spec.format === 'legacy') return layerTars; // legacy: uncompressed layers
-  // Prefer node's native zstd (node >= 22.15): the vendored wasm CJS build's
-  // compress() degrades in-process after enough calls (observed on node
-  // v22.22.3: by the 3rd fixture build in one process the blobs no longer
-  // decompress to their inputs), which made fixtures nondeterministic. The
-  // wasm path stays as a fallback for older node versions.
-  try {
-    const zlib = await import('node:zlib');
-    if (typeof zlib.zstdCompressSync === 'function') {
-      return layerTars.map((t) => zlib.zstdCompressSync(t, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } }));
-    }
-  } catch { /* fall through to wasm */ }
-  const { createRequire } = await import('node:module');
-  const require = createRequire(import.meta.url);
-  const mod = require('@bokuweb/zstd-wasm');
-  await mod.init();
-  return layerTars.map((t) => Buffer.from(mod.compress(t, 3)));
+  // node's native zstd (node >= 22.15) — required for zstd synthesis.
+  const zlib = await import('node:zlib');
+  if (typeof zlib.zstdCompressSync !== 'function') {
+    throw new Error('zstd fixture synthesis requires node >= 22.15 (native zlib zstd)');
+  }
+  // spec.zstdContentSizeFlag === 0 emits frames WITHOUT a content size —
+  // fixtures for streamed compression as produced by containerd/buildx.
+  const extra = spec.zstdContentSizeFlag != null ? { [zlib.constants.ZSTD_c_contentSizeFlag]: spec.zstdContentSizeFlag } : {};
+  return layerTars.map((t) => zlib.zstdCompressSync(t, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3, ...extra } }));
 }
 
 function assembleArchive(spec, layerTars, layerBlobs) {
