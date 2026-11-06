@@ -39,6 +39,15 @@ class TopK {
 }
 
 const SMALL_FILE_MAX = 4 * 1024 * 1024; // collect tiny metadata files in pass 1
+// Hard upper bound for a single decompressed zstd layer on the one-shot WASM
+// decoder path (browsers without native DecompressionStream('zstd')). The WASM
+// fallback allocates the whole layer inside the WASM heap (input + output both
+// live at once), so an unbounded layer is an allocation-crash / tab-OOM risk.
+// gzip layers are unaffected — they stream end-to-end. analyzeImage() callers
+// may tune this with the `maxLayerBytes` option. Tested maximum: ~119.5 MiB
+// (python:3.12-slim recompressed as a single zstd layer, in real Chromium via
+// browser-bench.yml). Refusal produces a clear error, never a silent crash.
+const DEFAULT_MAX_LAYER_BYTES = 512 * 1024 * 1024; // 512 MiB
 const COLLECT_PATHS = new Set(['manifest.json', 'index.json', 'oci-layout', 'repositories']);
 const ROOT_CONFIG_RE = /^[0-9a-f]{64}\.json$/;
 
@@ -49,7 +58,7 @@ async function sniffCompression(blob, offset) {
   return 'none';
 }
 
-async function layerStream(blob, offset, size, compression) {
+async function layerStream(blob, offset, size, compression, maxLayerBytes) {
   if (compression === 'none') {
     return blobReadableStream(blob, offset, offset + size);
   }
@@ -64,6 +73,13 @@ async function layerStream(blob, offset, size, compression) {
   }
   const raw = new Uint8Array(await readBlobSlice(blob, offset, offset + size));
   const out = await decompressZstd(raw);
+  if (out.byteLength > maxLayerBytes) {
+    throw new Error(
+      `zstd layer decompressed to ${(out.byteLength / 1048576).toFixed(1)} MiB, exceeding the ${(maxLayerBytes / 1048576).toFixed(0)} MiB fallback limit. ` +
+      `The in-browser WASM decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
+      `analyzeImage() callers can tune the limit via the maxLayerBytes option.`,
+    );
+  }
   return new ReadableStream({
     start(controller) { controller.enqueue(out); controller.close(); },
   });
@@ -95,7 +111,7 @@ function alignHistory(history, layerCount) {
   return commands;
 }
 
-export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20, platform = null } = {}) {
+export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20, platform = null, maxLayerBytes = DEFAULT_MAX_LAYER_BYTES } = {}) {
   const warnings = [];
   const progress = (phase, detail) => onProgress({ phase, ...(detail || {}) });
 
@@ -269,7 +285,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     let entryBytes = 0;
     let sawAny = false;
     try {
-      for await (const { header } of iterTarEntries(await layerStream(blob, meta.dataOffset, meta.size, compression), {
+      for await (const { header } of iterTarEntries(await layerStream(blob, meta.dataOffset, meta.size, compression, maxLayerBytes), {
         collectData: () => false,
       })) {
         sawAny = true;

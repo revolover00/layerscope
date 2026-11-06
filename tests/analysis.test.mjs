@@ -164,3 +164,21 @@ test('multi-manifest OCI index: unknown platform falls back to the default with 
   assert.equal(a.selectedPlatform, 'linux/amd64');
   assert.ok(a.warnings.some((w) => /not present/.test(w)), `fallback warning present: ${a.warnings.join(' | ')}`);
 });
+
+test('zstd fallback limit: layer above maxLayerBytes fails with a clear, actionable error', async () => {
+  const buf = await buildFixtureAsync('oci-save-zstd'); // small but real zstd layer
+  await assert.rejects(
+    () => analyzeImage(new MemBlob(buf), { maxLayerBytes: 1 }),
+    (err) => {
+      assert.match(err.message, /exceeding the 0 MiB fallback limit/);
+      assert.match(err.message, /gzip/); // tells the user the streaming alternative
+      return true;
+    },
+  );
+});
+
+test('zstd fallback limit: layer under a generous maxLayerBytes passes', async () => {
+  const buf = await buildFixtureAsync('oci-save-zstd');
+  const a = await analyzeImage(new MemBlob(buf), { maxLayerBytes: 512 * 1024 * 1024 });
+  assert.equal(a.layerCount, 3);
+});
