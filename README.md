@@ -117,21 +117,29 @@ docker-save images.
 | `multi-waste` | added-then-deleted, overwritten config, removed dir  |
 
 CI (`.github/workflows/ci.yml`) builds them with docker, saves them with
-`docker save`, runs `dive --ci` and `dive --json` (v0.13.1, the current
-release) on the archives via the `docker-archive:` source scheme, then compares
-layerscope's output against dive's with `tools/compare.mjs`.
+`docker save`, `docker load`s the archives into the daemon, and analyzes them
+with `dive --ci` and `dive --json` (v0.13.1, the current release) — dive's
+canonical docker-daemon source — then compares layerscope's output against
+dive's with `tools/compare.mjs`.
 
-**Honest status:** this job runs on GitHub Actions. It was *not* executed
-locally while developing this repository — there is no docker daemon or dive
-binary in the development sandbox. Everything that *could* be run locally was
-(unit tests, golden verification above). If the CI comparison finds a
-difference, CI fails and prints the diff.
+**Latest CI result (2026-11-06, [run #42176215174](https://github.com/revolover00/layerscope/actions/runs/42176215174)):
+both jobs green.** The comparison step passed on all four samples — layerscope's
+numbers match the real dive CLI exactly on images built by docker. dive --ci
+passes on `clean` and rejects the three wasteful samples as designed. (An
+earlier revision of the job fed dive the archives via the `docker-archive:`
+source scheme; dive exited non-zero with it, so the job now uses the daemon.)
 
 You can reproduce it where docker and dive are available:
 
 ```bash
 DIVE=/path/to/dive tools/check-samples.sh
 ```
+
+### UI smoke test
+
+`tools/smoke-ui.mjs` (jsdom, no browser needed) loads `index.html`, clicks the
+demo button and walks the whole analysis view — layers, tabs, filters, gauge —
+asserting the DOM updates. `npm install && npm run smoke` → `SMOKE TEST PASSED`.
 
 ## How the efficiency score is computed
 
@@ -179,7 +187,7 @@ src/core/tar.js         streaming tar parser (chunked, bounded memory)
 src/core/model.js       FileTree, whiteouts, squash/merge
 src/core/analyze.js     archive orchestration + dive-compatible analysis
 src/core/format.js      byte/percent formatting
-tools/                  fixture synth, golden verification, comparison, benchmark
+tools/                  fixture synth, golden verification, comparison, smoke test
 tests/                  node --test unit tests
 samples/                Dockerfiles used by CI (add-delete, overwrite, multi-waste, clean)
 .github/workflows/ci.yml    unit tests + golden verification + samples vs dive
