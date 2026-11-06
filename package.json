@@ -10,13 +10,16 @@
     "analyze": "node tools/analyze.mjs",
     "compare": "node tools/compare.mjs",
     "verify": "node tools/verify-fixtures.mjs",
-    "smoke": "node tools/smoke-ui.mjs"
+    "smoke": "node tools/smoke-ui.mjs",
+    "bench:memory": "node --expose-gc tools/bench-memory.mjs",
+    "browser:bench": "node tools/browser-bench.mjs"
   },
   "engines": {
     "node": ">=18"
   },
   "devDependencies": {
     "@bokuweb/zstd-wasm": "0.0.27",
-    "jsdom": "^31.0.0"
+    "jsdom": "^31.0.0",
+    "playwright-core": "^1.48.0"
   }
 }

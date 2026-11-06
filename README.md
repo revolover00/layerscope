@@ -121,6 +121,33 @@ lists, byte sizes, creating commands, image totals, efficiency scores
 goldens on the fixtures that ran — including dive's two real on-disk
 docker-save images.
 
+`fileReference` is compared as a multiset of exact (file, count, sizeBytes)
+triples, not positionally: dive v0.13.1 orders that list by cumulative size
+only via the unstable `sort.Sort` and exports it in reverse
+(`dive/filetree/efficiency.go`, `runtime/export/export.go` in the v0.13.1 tag) —
+there is no path tiebreaker, so the order of equal-size entries is undefined
+there. layerscope emits size-descending, path-ascending (dive `main`
+behavior). Tolerances are not relaxed: every triple must still match exactly;
+counts, sizes and list contents are checked one-to-one, only dive v0.13.1's
+undefined intra-tie order is normalized away.
+
+### Real public images vs. the real dive CLI
+
+CI (`.github/workflows/ci.yml`, `real-images` job, `tools/check-real-images.sh`)
+pulls six public images — `alpine`, `busybox`, `nginx:alpine`, `python:3.12-slim`,
+`node:20-alpine`, `ubuntu:24.04` — `docker save`s them, analyzes with dive
+v0.13.1 via the daemon (`dive --json`) and with layerscope on the same tar, and
+compares with the same `tools/lib-compare.mjs` and tolerances as the golden
+verification (efficiencyScore rel tol 1e-9; everything else exact;
+fileReference as described above). Every difference is printed — nothing is
+suppressed. Current status on the default branch: **all six images match**
+(pulls via `mirror.gcr.io` with docker.io fallback; the job is re-run on every
+push). The one real discrepancy found during bring-up was python:3.12-slim's
+three zero-byte dpkg lock entries — the dive v0.13.1 intra-tie order artifact
+described above, not a layerscope bug; after the multiset comparison landed,
+python:3.12-slim matches exactly (image sizeBytes 119,470,750; inefficientBytes
+5,690,470; efficiencyScore 0.9671877593469531 identical to dive).
+
 ### Sample images vs. the real dive CLI
 
 `samples/` contains four Dockerfiles used in CI:
@@ -228,17 +255,54 @@ analyzing with `node tools/analyze.mjs` / in-memory blob (blob already resident)
 | archive                                        | size    | layers | result                              | time     |
 |------------------------------------------------|---------|--------|-------------------------------------|----------|
 | synthetic OCI-save, gzip, 6 layers (62 MiB)¹    | 62.0 MB | 6      | eff. 99.9999%, wasted 136 B         | 434–471 ms |
+| synthetic OCI-save, zstd, 6 layers (62 MiB)¹    | 62.0 MB | 6      | eff. 99.9999%, wasted 136 B         | 167–216 ms cold (module init included); 115–148 ms warm |
 | add-delete.legacy.tar                          | 2.0 MB  | 3      | eff. 0.00%, wasted 2,097,152 B      | ~8 ms    |
 | add-delete.oci-archive.gzip.tar                | 2.0 MB  | 3      | eff. 0.00%, wasted 2,097,152 B      | ~21 ms   |
 | multi-waste.legacy.tar                         | 2.0 MB  | 3      | eff. 100.00%, wasted 0 B            | ~9 ms    |
 | overwrite.legacy.tar                           | 1.0 MB  | 3      | eff. 50.00%, wasted 1,048,689 B     | ~6 ms    |
 
-Heap growth during the 62 MB analysis: ~1.2 MiB (measured with
-`--expose-gc`; file bytes are never retained). Browser timings will differ; the bundled sample is 92 KiB and analyzes in
-milliseconds.
-¹ Synthetic 6-layer OCI-save archive (gzip) generated with `tools/synth-lib.mjs`
-(~10.3 MiB of incompressible random data per layer, plus a 68-byte file duplicated
-across two layers). Content is random, so gzip achieves almost nothing.
+No speed advantage for zstd over gzip is claimed on real compressible data: the
+62 MiB fixture above is random (incompressible), so both decoders do about as
+much work. Decode-rate comparisons on realistic compressible content are only
+meaningful per-payload; the browser benchmark in `browser-bench.yml` measures
+cold/warm zstd analysis of a recompressed alpine rootfs for exactly this reason.
+
+### Real-browser timings (Playwright Chromium in GitHub Actions)
+
+Measured by `browser-bench.yml` (headless Chromium, ubuntu-latest, site served
+locally, archive uploaded through the real file input; time from upload until
+the analysis view is fully rendered):
+
+| image                                                     | archive | layers | cold (WASM fetch+compile+init) | warm  |
+|-----------------------------------------------------------|---------|--------|--------------------------------|-------|
+| alpine:3.20 rootfs exported and recompressed with zstd (level 3, REAL compressible layer) | 3.4 MB  | 1      | 216 ms                         | 111 ms |
+| synthetic incompressible 62 MiB zstd (the fixture above)  | 62.0 MB | 6      | 405 ms                         | 342 ms |
+
+Both runs: zero console/page errors; JS heap after cold analysis 19.6 MB (alpine)
+and 98.2 MB (62 MiB) per Chromium `performance.memory` (JS heap only — WASM
+linear memory is not included in that counter). An earlier development build
+showed a ~75 s end-to-end analysis on a zstd image in headless Chromium; that
+figure is not reproducible with the current code on either image above (nor on
+the incompressible worst case), and the fixture it was measured on no longer
+exists — it is not attributable precisely. What is verified now: current main
+analyzes both images end-to-end in a real browser in well under a second.
+
+Memory on the zstd fallback path: `heapUsed` alone is misleading because the
+vendored WASM decoder lives in linear (ArrayBuffer/external) memory. Measured
+with `tools/bench-memory.mjs` (`node --expose-gc`, the same 62 MiB zstd fixture,
+fresh process, WASM module cold, peak sampled inside `onProgress`):
+
+- `arrayBuffers` 0.01 → 62.0 MB (file Buffer + copies) → 124.1 MB during analysis → 82.7 MB after GC (+20.7 MB retained: grown WASM linear memory + module; warm-module runs return to +0.2 MB after GC)
+- `rss` 45.7 → 107.9 MB after file load → 219–226 MB during analysis → 181–220 MB after GC (+73 to +112 MB over before analysis)
+- `heapUsed` delta ≤ +0.8 MB — reporting heapUsed alone would miss ~120 MB of RSS growth
+- the outer archive Buffer accounts for the rest; file bytes are never retained after analysis
+
+Browser timings will differ; the bundled sample is 92 KiB and analyzes in milliseconds.
+¹ Synthetic 6-layer OCI-save archive (gzip: `tools/synth-lib.mjs`; zstd:
+`tools/ci/build-incompressible-zstd.mjs`), ~10.3 MiB of incompressible random
+data per layer plus a 68-byte file duplicated across two layers. Content is
+random, so compression achieves almost nothing — these rows describe decode+parse
+cost on incompressible bytes, not on typical images.
 
 ## Repository layout
 
@@ -255,7 +319,11 @@ src/core/zstd.js        lazy zstd loader (native DecompressionStream, else vendo
 src/core/model.js       FileTree, whiteouts, squash/merge
 src/core/analyze.js     archive orchestration + dive-compatible analysis
 src/core/format.js      byte/percent formatting
-tools/                  fixture synth, golden verification, comparison, smoke test
+tools/                  fixture synth, golden verification, comparison, smoke test, benchmarks
+tools/ci/               CI-only helpers (build zstd OCI fixtures)
+tools/browser-bench.mjs real-browser cold/warm analysis times (Chromium, used by browser-bench.yml)
+tools/bench-memory.mjs  rss + arrayBuffers memory bench for the zstd fallback path
+tools/check-real-images.sh  pull public images, compare vs dive CLI (used by ci.yml real-images job)
 tests/                  node --test unit tests
 LICENSE                 MIT
 samples/                Dockerfiles used by CI (add-delete, overwrite, multi-waste, clean)
