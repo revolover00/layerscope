@@ -73,12 +73,25 @@ for img in $IMAGES; do
   tag="$(tag_of "$img")"
   echo "" | tee -a "$OUT/compare.log"
   echo "==================== $img ====================" | tee -a "$OUT/compare.log"
-  if node tools/compare.mjs "$OUT/out/${tag}.dive.json" "$OUT/out/${tag}.layerscope.json" 2>&1 | tee -a "$OUT/compare.log"; then
+  if node tools/compare.mjs "$OUT/out/${tag}.dive.json" "$OUT/out/${tag}.layerscope.json" > "$OUT/out/${tag}.compare.txt" 2>&1; then
+    cat "$OUT/out/${tag}.compare.txt" | tee -a "$OUT/compare.log"
     echo "RESULT $img: match" | tee -a "$OUT/compare.log"
     echo "::notice::real-images RESULT $img: match"
   else
+    cat "$OUT/out/${tag}.compare.txt" | tee -a "$OUT/compare.log"
     echo "RESULT $img: MISMATCH (see diffs above)" | tee -a "$OUT/compare.log"
-    echo "::error::stage=compare image=$img (mismatch vs dive — see job log for diffs)"
+    # re-emit the diff as chunked annotations so it is readable without log access
+    # (GitHub check runs cap annotations, ~50 per run; each chunk stays well below limits)
+    i=0
+    total=$(wc -c < "$OUT/out/${tag}.compare.txt")
+    split -b 1500 "$OUT/out/${tag}.compare.txt" "$OUT/diff-chunk-"
+    for chunk in "$OUT"/diff-chunk-*; do
+      i=$((i + 1))
+      chunk_text=$(tr '\n' '@' < "$chunk")
+      echo "::notice::realimages-diff[$img][$i] $chunk_text"
+    done
+    rm -f "$OUT"/diff-chunk-*
+    echo "::error::stage=compare image=$img (mismatch vs dive — diff re-emitted as annotations)"
     failed=1
   fi
 done
