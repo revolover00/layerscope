@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+*.png binary
+*.woff2 binary
+*.tar binary
+*.tar.gz binary
+
+*.md text diff=markdown
+*.yml text
+*.yaml text
