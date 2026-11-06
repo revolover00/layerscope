@@ -43,7 +43,10 @@ function showError(message) {
   if (!box) {
     box = el('div', 'warnings error-box');
     box.id = 'error-box';
-    $('#landing .hero').appendChild(box);
+    // place it directly below the dropzone so the failure is visible without scrolling
+    const dropzone = $('#dropzone');
+    if (dropzone && dropzone.parentNode) dropzone.parentNode.insertBefore(box, dropzone.nextSibling);
+    else $('#landing .hero').appendChild(box);
   }
   box.innerHTML = '';
   const title = el('strong', '', 'Could not analyze that archive. ');
@@ -145,7 +148,7 @@ function renderLayerTable(a) {
     tr.setAttribute('aria-label', `Select layer ${layer.index}`);
 
     const tdIdx = el('td', 'idx', String(layer.index));
-    const tdBar = el('td');
+    const tdBar = el('td', 'size-bar-cell');
     const bar = el('div', 'layer-size-bar');
     const fill = el('span');
     fill.style.width = `${Math.max(2, (layer.sizeBytes / maxSize) * 100)}%`;
