@@ -9,7 +9,7 @@ import { analyzeImage } from '../src/core/analyze.js';
 import zlib from 'node:zlib';
 
 import { synthesize } from '../tools/synth.mjs';
-import { buildFixtureAsync } from '../tools/fixtures.mjs';
+import { buildFixtureAsync, buildMultiManifestFixture } from '../tools/fixtures.mjs';
 
 class MemBlob {
   constructor(buf) { this.buf = buf; this.size = buf.length; }
@@ -137,4 +137,30 @@ test('zstd-compressed layers analyze identically to the uncompressed one', async
   assert.equal(b.efficiency, a.efficiency);
   assert.equal(b.totalSizeBytes, a.totalSizeBytes);
   assert.deepEqual(b.topLayerEntries, a.topLayerEntries);
+});
+
+test('multi-manifest OCI index: defaults to linux/amd64 with a visible warning', async () => {
+  const buf = await buildMultiManifestFixture();
+  const a = await analyzeImage(new MemBlob(buf));
+  assert.equal(a.selectedPlatform, 'linux/amd64');
+  assert.match(a.layers[0].command, /amd64/);
+  assert.ok(a.warnings.some((w) => /2 manifests/.test(w) && /linux\/amd64/.test(w)), `warning lists platforms: ${a.warnings.join(' | ')}`);
+  assert.equal(a.platforms.length, 2);
+  assert.equal(a.platforms.filter((p) => p.selected).length, 1);
+});
+
+test('multi-manifest OCI index: explicit platform selection switches the analyzed manifest', async () => {
+  const buf = await buildMultiManifestFixture();
+  const a = await analyzeImage(new MemBlob(buf), { platform: 'linux/arm64/v8' });
+  assert.equal(a.selectedPlatform, 'linux/arm64/v8');
+  assert.match(a.layers[0].command, /arm64v8/);
+  const b = await analyzeImage(new MemBlob(buf), { platform: 'linux/arm64' });
+  assert.equal(b.selectedPlatform, 'linux/arm64/v8', 'variant-less query matches linux/arm64/v8');
+});
+
+test('multi-manifest OCI index: unknown platform falls back to the default with a warning', async () => {
+  const buf = await buildMultiManifestFixture();
+  const a = await analyzeImage(new MemBlob(buf), { platform: 'linux/s390x' });
+  assert.equal(a.selectedPlatform, 'linux/amd64');
+  assert.ok(a.warnings.some((w) => /not present/.test(w)), `fallback warning present: ${a.warnings.join(' | ')}`);
 });

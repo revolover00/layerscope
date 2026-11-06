@@ -8,6 +8,18 @@ const { window } = dom;
 
 window.scrollTo = () => {};
 window.Blob = Blob;
+
+// The site fetches its bundled sample archive over HTTP; in the sandbox we
+// serve it straight from disk.
+const bundledSample = readFileSync(new URL('../assets/samples/layerscope-demo.tar', import.meta.url));
+let servedSample = bundledSample;
+globalThis.fetch = async (url) => {
+  const path = String(url);
+  if (path.includes('assets/samples/layerscope-demo.tar')) {
+    return new Response(servedSample, { status: 200, headers: { 'Content-Type': 'application/x-tar' } });
+  }
+  return new Response('not found', { status: 404 });
+};
 try { Object.defineProperty(window, 'crypto', { value: nodeCrypto.webcrypto }); } catch { /* keep jsdom default */ }
 try { Object.defineProperty(window, 'DecompressionStream', { value: DecompressionStream }); } catch { /* optional */ }
 
@@ -34,18 +46,19 @@ await new Promise((r) => setTimeout(r, 10));
 assert(heroCopied === 'docker save -o my-image.tar my-image:latest', `hero command copies exactly: ${heroCopied}`);
 assert($('hero-cmd-copy').querySelector('.copy-btn-label').textContent === 'Copied!', 'hero copy feedback label');
 
-$('demo-btn').click();
+$('sample-btn').click();
 
 let ready = false;
 for (let i = 0; i < 400; i++) {
   await new Promise((r) => setTimeout(r, 50));
   if ($('analysis').hidden === false) { ready = true; break; }
 }
-assert(ready, 'analysis view shown after demo analysis');
+assert(ready, 'analysis view shown after sample analysis');
 assert($('progress-overlay').hidden === true, 'progress overlay hidden after analysis');
 
 if (ready) {
-  assert($('image-name').textContent.includes('layerscope/demo'), `image name rendered: ${$('image-name').textContent}`);
+  assert($('image-name').textContent.includes('layerscope/sample'), `image name rendered: ${$('image-name').textContent}`);
+  assert($('platform-row').hidden === true, 'platform picker hidden for single-platform legacy sample');
   assert($('chip-layers').textContent.includes('4'), `chip layers: ${$('chip-layers').textContent}`);
   const layerRows = window.document.querySelectorAll('#layer-table tbody tr');
   assert(layerRows.length === 4, `layer table rows: ${layerRows.length}`);
@@ -88,7 +101,7 @@ if (ready) {
   assert(!$('panel-top').hidden, 'top panel visible');
   const topRows = window.document.querySelectorAll('#top-tbody tr');
   assert(topRows.length >= 1 && topRows.length <= 20, `top files rows within range: ${topRows.length}`);
-  assert(topRows.length === 6, `demo image has exactly 6 largest-entry rows (whiteouts excluded): ${topRows.length}`);
+  assert(topRows.length === 6, `sample image has exactly 6 largest-entry rows (whiteouts excluded): ${topRows.length}`);
   console.log('   top file row 1:', window.document.querySelector('#top-tbody tr').textContent.replace(/\s+/g, ' ').trim());
 
   // switch top scope to final image
@@ -106,6 +119,43 @@ if (ready) {
   const filtered = window.document.querySelectorAll('#wasted-tbody tr');
   console.log(`   wasted rows matching "data.bin": ${filtered.length}`);
   assert(filtered.length >= 1, 'wasted filter keeps matching rows');
+}
+
+// ---------------- multi-platform OCI index: picker appears and re-analyzes ----------------
+
+{
+  const { buildMultiManifestFixture } = await import('./fixtures.mjs');
+  servedSample = await buildMultiManifestFixture();
+  const before = $('image-name').textContent;
+  $('sample-btn').click();
+
+  let ok = false;
+  for (let i = 0; i < 400; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    if ($('progress-overlay').hidden && !$('platform-row').hidden && $('platform-chips').children.length === 2) { ok = true; break; }
+  }
+  assert(ok, 'platform picker appears for a two-manifest OCI index');
+  assert($('platform-title').textContent.includes('linux/amd64'), `default selection named in UI: ${$('platform-title').textContent}`);
+  const chipTexts = [...$('platform-chips').children].map((c) => c.textContent);
+  assert(chipTexts.join('|') === 'linux/amd64|linux/arm64/v8', `chips: ${chipTexts.join('|')}`);
+  assert(window.document.querySelector('.platform-chip.is-active').textContent === 'linux/amd64', 'amd64 chip marked active');
+  assert($('warnings').textContent.includes('2 manifests'), `warning names the index: ${$('warnings').textContent.trim()}`);
+
+  // switch to arm64/v8 and expect a re-analysis to complete
+  const armChip = [...$('platform-chips').children].find((c) => c.textContent === 'linux/arm64/v8');
+  armChip.click();
+  let switched = false;
+  for (let i = 0; i < 400; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    if ($('progress-overlay').hidden && $('platform-title').textContent.includes('linux/arm64/v8')) { switched = true; break; }
+  }
+  assert(switched, 're-analysis to linux/arm64/v8 completes');
+  assert(window.document.querySelector('.platform-chip.is-active').textContent === 'linux/arm64/v8', 'arm64/v8 chip marked active');
+  assert($('warnings').textContent.includes('linux/arm64/v8'), 'warning names the re-selected platform');
+  assert($('ld-command').textContent.includes('arm64v8'), `arm64 manifest command shown: ${$('ld-command').textContent}`);
+  console.log('   multi-manifest before/after image name:', before, '→', $('image-name').textContent);
+
+  servedSample = bundledSample; // restore
 }
 
 console.log(process.exitCode ? 'SMOKE TEST FAILED' : 'SMOKE TEST PASSED');
