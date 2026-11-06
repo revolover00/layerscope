@@ -30,11 +30,22 @@ if (!rootfsPath || !outPath) {
 const rootfs = readFileSync(rootfsPath);
 const diffId = sha256(rootfs);
 
-const { createRequire } = await import('node:module');
-const require = createRequire(import.meta.url);
-const wasm = require('@bokuweb/zstd-wasm');
-await wasm.init();
-const layerZst = Buffer.from(wasm.compress(rootfs, level));
+// Prefer node's native zstd (node >= 22.15); the vendored wasm CJS compressor
+// degrades in-process after enough calls and is slower on large layers.
+let layerZst = null;
+try {
+  const zlib = await import('node:zlib');
+  if (typeof zlib.zstdCompressSync === 'function') {
+    layerZst = zlib.zstdCompressSync(rootfs, { params: { [zlib.constants.ZSTD_c_compressionLevel]: level } });
+  }
+} catch { /* fall through to wasm */ }
+if (!layerZst) {
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const wasm = require('@bokuweb/zstd-wasm');
+  await wasm.init();
+  layerZst = Buffer.from(wasm.compress(rootfs, level));
+}
 const layerDigest = sha256(layerZst);
 
 const MTIME = Math.floor(Date.now() / 1000);
