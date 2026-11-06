@@ -21,7 +21,7 @@ import { tmpdir } from 'node:os';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { analyzeImage } from '../src/core/analyze.js';
-import { buildFixture, NAMED_FIXTURES } from './fixtures.mjs';
+import { buildFixtureAsync, NAMED_FIXTURES } from './fixtures.mjs';
 import { compareAnalyses } from './lib-compare.mjs';
 
 const DIVE_REPO = process.env.DIVE_REPO || '/tmp/dive-src/dive-main';
@@ -100,7 +100,7 @@ async function check(name, blob, goldenPath) {
 for (const name of Object.keys(NAMED_FIXTURES)) {
   let buf;
   try {
-    buf = buildFixture(name);
+    buf = await buildFixtureAsync(name);
   } catch (err) {
     console.error(`SKIP ${name}: cannot synthesize fixture (${err.message})`);
     skip++;

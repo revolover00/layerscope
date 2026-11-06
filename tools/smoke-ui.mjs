@@ -26,6 +26,14 @@ assert(!$('analysis').hidden === false, 'analysis hidden initially');
 assert($('landing').hidden === false, 'landing visible initially');
 assert($('progress-overlay').hidden === true, 'progress overlay hidden initially');
 
+// hero terminal snippet copies the exact docker save command
+let heroCopied = null;
+try { Object.defineProperty(globalThis.navigator, 'clipboard', { value: { writeText: async (t) => { heroCopied = t; } }, configurable: true }); } catch { /* keep default */ }
+$('hero-cmd-copy').click();
+await new Promise((r) => setTimeout(r, 10));
+assert(heroCopied === 'docker save -o my-image.tar my-image:latest', `hero command copies exactly: ${heroCopied}`);
+assert($('hero-cmd-copy').querySelector('.copy-btn-label').textContent === 'Copied!', 'hero copy feedback label');
+
 $('demo-btn').click();
 
 let ready = false;
