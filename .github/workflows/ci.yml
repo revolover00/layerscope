@@ -13,8 +13,14 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install dev dependencies
+        run: npm ci
+
       - name: Run unit tests
         run: npm test
+
+      - name: Smoke test the UI (jsdom)
+        run: npm run smoke
 
       - name: Verify layerscope against dive's committed golden files
         run: |

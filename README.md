@@ -1,5 +1,8 @@
 # layerscope
 
+[![CI](https://github.com/revolover00/layerscope/actions/workflows/ci.yml/badge.svg)](https://github.com/revolover00/layerscope/actions/workflows/ci.yml)
+[![Deploy to GitHub Pages](https://github.com/revolover00/layerscope/actions/workflows/pages.yml/badge.svg)](https://github.com/revolover00/layerscope/actions/workflows/pages.yml)
+
 **A browser-only Docker image inspector.** Drop a `.tar` produced by `docker save`
 and layerscope unpacks it *in your browser* — nothing is uploaded, no server is
 involved. It shows what each layer adds/modifies/deletes, which files are dead
@@ -33,6 +36,11 @@ python3 -m http.server 8080        # or: npx serve .
   - OCI layout (`index.json` + `blobs/sha256/...`), including dual-format archives
     that carry both
 - **gzip-compressed layers**, decompressed on the fly with `DecompressionStream`
+- **zstd-compressed layers** — natively where the browser provides
+  `DecompressionStream('zstd')`, otherwise through a vendored WebAssembly decoder
+  (`assets/vendor/zstd`, `@bokuweb/zstd-wasm`, MIT). The WASM fallback decodes one
+  layer in memory; gzip layers stream end-to-end. Verified against dive's
+  `oci-save-zstd` golden — it passes.
 - **Per layer:** uncompressed tar-header byte size, the creating command
   (from image config `history`, with dive's `/bin/sh -c ` prefix trimmed),
   entry count, and the diff vs. the squashed lower image —
@@ -50,13 +58,15 @@ python3 -m http.server 8080        # or: npx serve .
 - **Large files** are handled by streaming the archive in slices (`Blob.slice`)
   through `DecompressionStream`; the outer archive is never loaded whole into
   memory, and memory grows with the number of file entries, not with byte size
-- **UI:** filterable layer diff lists, wasted-space table with per-path copy counts, efficiency gauge, one-click copy of the creating command, keyboard-accessible dropzone
+- **UI:** filterable layer diff lists, wasted-space table with per-path copy counts, efficiency gauge, one-click copy of the creating command, keyboard-accessible dropzone, self-hosted Geist fonts (no CDN)
 
 ## What does not work (honestly)
 
-- **zstd-compressed layers are not supported.** Node 22 (and several browsers)
-  cannot `DecompressionStream('zstd')`. Re-save with gzip instead. The
-  verification suite skips the single zstd fixture — it does not silently pass.
+- **zstd relies on the decoder path.** Where neither native `DecompressionStream('zstd')`
+  nor a successful WASM load is available, the layer cannot be read and the error
+  message says exactly that. The WASM fallback holds one layer in memory — gzip
+  layers remain fully streaming. Legacy `docker save` archives do not carry zstd
+  layers; `oci-save` zstd is the supported layout.
 - **`.tar.gz` / `.tar.zst` of a docker-archive is not supported.** `docker save`
   emits an uncompressed `.tar` already; layerscope expects exactly that and
   detects the outer gzip/zstd magic bytes to say so instead of failing with the
@@ -82,7 +92,7 @@ Numbers below are real output from this repository, not aspirations.
 
 ```
 $ npm test          # node --test
-# tests 14   # pass 14   # fail 0
+# tests 15   # pass 15   # fail 0
 ```
 
 ### layerscope vs. dive's own golden files
@@ -97,10 +107,11 @@ no expected values are hardcoded, and no goldens are rewritten by tooling.
 $ git clone --depth 1 https://github.com/wagoodman/dive /tmp/dive-src
 $ DIVE_REPO=/tmp/dive-src node tools/verify-fixtures.mjs
 ...
-16 passed, 0 failed, 1 skipped
+17 passed, 0 failed, 0 skipped
 ```
 
-The one skip is `oci-save-zstd` (zstd, see limits). Layer `digestId`s, file
+All 17 fixtures run, including `oci-save-zstd` (decoded with the vendored WASM
+decoder — layerscope synthesizes the fixture with the same decoder). Layer `digestId`s, file
 lists, byte sizes, creating commands, image totals, efficiency scores
 (relative tolerance 1e-9) and the ranked `fileReference` list all match dive's
 goldens on the fixtures that ran — including dive's two real on-disk
@@ -141,6 +152,14 @@ DIVE=/path/to/dive tools/check-samples.sh
 `tools/smoke-ui.mjs` (jsdom, no browser needed) loads `index.html`, clicks the
 demo button and walks the whole analysis view — layers, tabs, filters, gauge —
 asserting the DOM updates. `npm install && npm run smoke` → `SMOKE TEST PASSED`.
+
+### Design
+
+The interface is a Vercel-style dark system: pure black canvas, hairline borders,
+the Geist Sans/Mono pair (self-hosted woff2, `font-display: swap`), white-on-black
+primary action, monochrome panels with a single semantic signal color per state.
+Every view above was re-shot and checked after the re-skin — no horizontal
+overflow at 1440 px or 390 px, and the demo flow is unchanged.
 
 ### Browser check (headless Chromium)
 
@@ -219,10 +238,13 @@ across two layers). Content is random, so gzip achieves almost nothing.
 
 ```
 index.html              static app (landing + analysis views)
-assets/style.css        design system (no frameworks, inline SVG icons)
+assets/style.css        Vercel-inspired design system (self-hosted Geist, no frameworks, inline SVG icons)
+assets/fonts/           Geist Sans/Mono woff2, subset latin, OFL (GEIST-LICENSE.txt)
+assets/vendor/zstd/     vendored @bokuweb/zstd-wasm 0.0.27 (MIT) — see assets/vendor/zstd/LICENSE.txt
 src/app.js              UI orchestration (dropzone, tabs, rendering)
 src/demo.js             in-browser synthetic demo image builder
 src/core/tar.js         streaming tar parser (chunked, bounded memory)
+src/core/zstd.js        lazy zstd loader (native DecompressionStream, else vendored WASM)
 src/core/model.js       FileTree, whiteouts, squash/merge
 src/core/analyze.js     archive orchestration + dive-compatible analysis
 src/core/format.js      byte/percent formatting
