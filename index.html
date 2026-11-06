@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="layerscope — inspect Docker images entirely in your browser. Layers, file diffs, wasted space, efficiency score and the 20 largest files. No uploads, no backend.">
+  <title>layerscope — browser-only Docker image inspector</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path fill='%23f2b33d' d='M16 2 3 10l13 8 13-8L16 2Zm-9 12.5L3 17.5 16 25l13-7.5-4-2.4L16 19.7 7 14.5Z'/></svg>">
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="container topbar-inner">
+    <a class="brand" href="./" aria-label="layerscope home">
+      <svg class="brand-mark" width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <path d="M16 2.6 3.4 10.2 16 17.8l12.6-7.6L16 2.6Z" stroke="currentColor" stroke-width="2.1" stroke-linejoin="round"/>
+        <path d="m6.6 15.2-3.2 1.9L16 24.6l12.6-7.5-3.2-1.9L16 20.3l-9.4-5.1Z" stroke="currentColor" stroke-width="2.1" stroke-linejoin="round" opacity=".72"/>
+      </svg>
+      <span class="brand-word">layerscope</span>
+    </a>
+    <nav class="topnav">
+      <a href="#how">How it works</a>
+      <a class="gh-link" href="https://github.com/revolover00/layerscope" rel="noopener" target="_blank">
+        <svg width="17" height="17" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<!-- ============ dropzone / landing view ============ -->
+<section id="landing" class="landing">
+  <div class="container hero">
+    <p class="eyebrow">browser-only · no uploads · no backend</p>
+    <h1>See inside your<br>Docker image.</h1>
+    <p class="lede">Drop a <code>docker save</code> tarball and get per-layer file diffs, wasted-space analysis, an efficiency score and the largest files — computed locally, in seconds, on your machine. Your image never leaves the browser.</p>
+
+    <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Choose a docker save tarball">
+      <svg class="dz-icon" width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+        <path d="M22 30V10m0 0-8 8m8-8 8 8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M7 30v5.5A2.5 2.5 0 0 0 9.5 38h25a2.5 2.5 0 0 0 2.5-2.5V30" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+      </svg>
+      <p class="dz-title">Drop your image tarball here</p>
+      <p class="dz-sub">the output of <code>docker save image:tag -o image.tar</code></p>
+      <button id="browse-btn" class="btn btn-ghost" type="button">Choose file…</button>
+      <input id="file-input" type="file" accept=".tar,application/x-tar" hidden>
+    </div>
+
+    <div class="hero-alt">
+      <span>Nothing to test with?</span>
+      <button id="demo-btn" class="btn btn-primary" type="button">Analyze a sample image</button>
+      <span class="hero-alt-note">a small synthetic <code>add → modify → delete</code> image, built locally</span>
+    </div>
+
+    <ul class="hero-facts">
+      <li><strong>Legacy + OCI</strong><span>manifest.json and index.json layouts, gzip layers via DecompressionStream</span></li>
+      <li><strong>Memory-safe</strong><span>File.slice streaming — multi-GB archives without loading them into memory</span></li>
+      <li><strong>dive-compatible</strong><span>same size, waste and efficiency definitions — cross-checked in CI</span></li>
+    </ul>
+  </div>
+
+  <div class="container" id="how">
+    <div class="how-grid">
+      <div class="how-card"><span class="how-step">01</span><h3>Parse the tar</h3><p>Headers are read sequentially with File.slice. Legacy (manifest.json) and OCI (index.json + blobs/) layouts are both recognized; gzip layers stream through DecompressionStream.</p></div>
+      <div class="how-card"><span class="how-step">02</span><h3>Diff each layer</h3><p>Every layer is compared against the squashed filesystem below it: files added, modified or deleted — including <code>.wh.</code> whiteout files and <code>.wh..wh..opq</code> opaque markers.</p></div>
+      <div class="how-card"><span class="how-step">03</span><h3>Score it</h3><p>Files overwritten or removed in later layers still occupy space in earlier ones. layerscope computes wasted bytes and an efficiency score with dive's formula, plus the 20 largest files.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ analysis view ============ -->
+<section id="analysis" class="analysis" hidden>
+  <div class="container">
+
+    <div class="summary-bar">
+      <div class="summary-id">
+        <p class="summary-eyebrow">image</p>
+        <h2 id="image-name" class="image-name">—</h2>
+        <div class="summary-chips">
+          <span id="chip-format" class="chip">—</span>
+          <span id="chip-layers" class="chip">—</span>
+          <span id="chip-compressed" class="chip">—</span>
+        </div>
+      </div>
+
+      <div class="summary-stats">
+        <div class="stat"><span class="stat-label">Total size</span><span id="stat-total" class="stat-value">—</span><span class="stat-sub">sum of layer tar-header bytes</span></div>
+        <div class="stat"><span class="stat-label">Wasted</span><span id="stat-wasted" class="stat-value stat-warn">—</span><span class="stat-sub">bytes in duplicated/removed files</span></div>
+        <div class="stat stat-gauge">
+          <div class="gauge" role="img" aria-label="Efficiency score">
+            <svg viewBox="0 0 120 120" width="96" height="96">
+              <circle class="gauge-track" cx="60" cy="60" r="52"/>
+              <circle id="gauge-fill" class="gauge-fill" cx="60" cy="60" r="52" stroke-dasharray="326.7" stroke-dashoffset="326.7"/>
+            </svg>
+            <div class="gauge-center"><span id="gauge-value">—</span><span class="gauge-label">efficiency</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="summary-actions">
+        <button id="analyze-another" class="btn btn-ghost" type="button">← Analyze another</button>
+      </div>
+    </div>
+
+    <div id="warnings" class="warnings" hidden></div>
+
+    <div class="tabs" role="tablist" aria-label="Analysis views">
+      <button class="tab is-active" id="tab-layers" role="tab" aria-selected="true" aria-controls="panel-layers">Layers</button>
+      <button class="tab" id="tab-top" role="tab" aria-selected="false" aria-controls="panel-top">Top 20 files</button>
+      <button class="tab" id="tab-wasted" role="tab" aria-selected="false" aria-controls="panel-wasted">Wasted space</button>
+    </div>
+
+    <!-- Layers panel -->
+    <div id="panel-layers" class="panel" role="tabpanel" aria-labelledby="tab-layers">
+      <div class="layers-layout">
+        <div class="layer-list-wrap">
+          <table class="table layer-table" id="layer-table">
+            <thead><tr><th>#</th><th>Size</th><th>Layer size</th><th>Command</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="layer-detail" id="layer-detail">
+          <div class="layer-detail-head">
+            <div>
+              <p class="ld-eyebrow">layer <span id="ld-index">–</span></p>
+              <p id="ld-command" class="ld-command">—</p>
+              <p id="ld-digest" class="ld-digest">—</p>
+            </div>
+            <div class="ld-stats">
+              <div class="ld-stat"><span class="ld-num" id="ld-size">—</span><span class="ld-cap">tar size</span></div>
+              <div class="ld-stat"><span class="ld-num" id="ld-blob">—</span><span class="ld-cap">blob (<span id="ld-comp">—</span>)</span></div>
+              <div class="ld-stat"><span class="ld-num" id="ld-entries">—</span><span class="ld-cap">entries</span></div>
+            </div>
+          </div>
+
+          <div class="ld-diff-bar" id="ld-diff-bar" aria-hidden="true">
+            <span class="seg seg-added" id="seg-added"></span><span class="seg seg-modified" id="seg-modified"></span><span class="seg seg-deleted" id="seg-deleted"></span>
+          </div>
+          <div class="ld-counts"><span class="dot dot-added"></span><span id="cnt-added">0 added</span><span class="dot dot-modified"></span><span id="cnt-modified">0 modified</span><span class="dot dot-deleted"></span><span id="cnt-deleted">0 deleted</span></div>
+
+          <div class="ld-controls">
+            <input id="ld-filter" class="filter-input" type="search" placeholder="Filter paths…" aria-label="Filter files in this layer">
+            <div class="segmented" id="ld-kind" role="group" aria-label="Which changes to show">
+              <button class="seg-btn is-active" data-kind="all" type="button">All</button>
+              <button class="seg-btn" data-kind="added" type="button">Added</button>
+              <button class="seg-btn" data-kind="modified" type="button">Modified</button>
+              <button class="seg-btn" data-kind="deleted" type="button">Deleted</button>
+            </div>
+          </div>
+          <div id="ld-file-list" class="file-list" tabindex="0" aria-label="File changes in this layer"></div>
+          <p id="ld-truncated" class="ld-truncated" hidden></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top files panel -->
+    <div id="panel-top" class="panel" role="tabpanel" aria-labelledby="tab-top" hidden>
+      <div class="panel-head">
+        <div>
+          <h3>The 20 largest files</h3>
+          <p class="panel-sub" id="top-scope-note">—</p>
+        </div>
+        <div class="segmented" id="top-scope" role="group" aria-label="Ranking scope">
+          <button class="seg-btn is-active" data-scope="layers" type="button">Across all layers</button>
+          <button class="seg-btn" data-scope="final" type="button">In final image</button>
+        </div>
+      </div>
+      <table class="table top-table">
+        <thead><tr><th>#</th><th>Path</th><th>Size</th><th>Share</th><th id="top-col-context">Layer</th></tr></thead>
+        <tbody id="top-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- Wasted space panel -->
+    <div id="panel-wasted" class="panel" role="tabpanel" aria-labelledby="tab-wasted" hidden>
+      <div class="wasted-top">
+        <div class="wasted-explainer">
+          <h3>Why files can be “wasted”</h3>
+          <p>Docker layers are immutable. When a later layer <em>overwrites</em> or <em>deletes</em> a file, the old bytes stay in the earlier layer forever. dive and layerscope count every occurrence of a path across layers; an image is efficient when few paths appear in multiple layers.</p>
+          <ul class="formula-list">
+            <li><span class="formula-key">efficiency</span><span>Σ min(occurrence sizes) ÷ Σ cumulative sizes</span></li>
+            <li><span class="formula-key">wasted bytes</span><span>Σ cumulative size of paths seen in ≥ 2 layers</span></li>
+            <li><span class="formula-key">wasted %</span><span>wasted bytes ÷ (image size − first layer)</span></li>
+          </ul>
+          <p class="fine-print">Whiteouts of removed directories are sized from the squashed filesystem below them. Opaque markers (<code>.wh..wh..opq</code>) hide lower files without counting as deletions. Sizes are tar-header sizes; hardlinks count as 0.</p>
+        </div>
+        <div class="wasted-scorecard">
+          <div class="ws-row"><span class="ws-cap">Efficiency score</span><span id="ws-efficiency" class="ws-num">—</span></div>
+          <div class="ws-row"><span class="ws-cap">Wasted bytes</span><span id="ws-wasted" class="ws-num ws-warn">—</span></div>
+          <div class="ws-row"><span class="ws-cap">Wasted vs user layers</span><span id="ws-userpct" class="ws-num">—</span></div>
+          <div class="ws-row"><span class="ws-cap">Duplicated paths</span><span id="ws-paths" class="ws-num">—</span></div>
+        </div>
+      </div>
+      <div class="panel-head">
+        <div><h3>Wasted space by file</h3><p class="panel-sub">Paths present in more than one layer, largest first — same ordering as <code>dive</code>.</p></div>
+        <input id="wasted-filter" class="filter-input" type="search" placeholder="Filter paths…" aria-label="Filter wasted paths">
+      </div>
+      <table class="table wasted-table">
+        <thead><tr><th>Path</th><th>Copies</th><th>Cumulative</th><th>Share of waste</th><th></th></tr></thead>
+        <tbody id="wasted-tbody"></tbody>
+      </table>
+      <p id="wasted-empty" class="empty-state" hidden>No duplicated or deleted-then-readded paths — every path appears in exactly one layer. ✓</p>
+    </div>
+
+  </div>
+</section>
+</main>
+
+<footer class="site-footer">
+  <div class="container footer-inner">
+    <div class="footer-col">
+      <p class="footer-title">layerscope</p>
+      <p>Analyze Docker images without uploading them. File contents are streamed past and discarded — only tar headers are read.</p>
+    </div>
+    <div class="footer-col">
+      <p class="footer-title">Honest limits</p>
+      <ul>
+        <li>zstd-compressed layers need browser support for <code>DecompressionStream('zstd')</code> (not widely available) — use gzip.</li>
+        <li>Whole-archive <code>.tar.gz</code> of a <code>docker save</code> output is not supported — save with uncompressed layers.</li>
+        <li>Wasted-space math mirrors <a href="https://github.com/wagoodman/dive" rel="noopener" target="_blank">dive</a>; see README for verified/unverified claims.</li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <p class="footer-title">Privacy</p>
+      <p>Everything happens locally in your browser tab. Nothing is uploaded, nothing is stored, no cookies, no analytics.</p>
+    </div>
+  </div>
+</footer>
+
+<!-- progress overlay -->
+<div id="progress-overlay" class="overlay" hidden role="dialog" aria-modal="true" aria-label="Analyzing image">
+  <div class="overlay-card">
+    <p class="overlay-title">Analyzing image…</p>
+    <div class="progress-track"><div id="progress-fill" class="progress-fill"></div></div>
+    <p id="progress-text" class="overlay-text">Reading archive…</p>
+    <p id="progress-file" class="overlay-file"></p>
+  </div>
+</div>
+
+<script type="module" src="src/app.js"></script>
+</body>
+</html>
