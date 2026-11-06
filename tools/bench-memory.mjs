@@ -2,9 +2,9 @@
 // Memory footprint of the zstd FALLBACK decode path.
 //
 // Node has no native DecompressionStream('zstd'), so analyzing a zstd-layered
-// archive here exercises exactly the vendored-WASM one-shot decoder path that
-// browsers without native zstd take (assets/vendor/zstd or @bokuweb/zstd-wasm),
-// with the same Blob.slice streaming around it.
+// archive here exercises exactly the fallback path that browsers without
+// native zstd take (the pure-JS fzstd streaming decoder), with the same
+// Blob.slice streaming around it.
 //
 // Measures rss and process.memoryUsage().arrayBuffers (plus heapUsed and
 // external for context) — NOT heapUsed only. A running max of rss is sampled

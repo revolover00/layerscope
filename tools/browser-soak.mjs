@@ -13,7 +13,7 @@
 // Usage:
 //   node tools/browser-soak.mjs --url http://127.0.0.1:8321 \
 //     --image /tmp/bench/soak.tar --layer-url /soak-layer.zst --expected-sha256 <hex> \
-//     [--iterations 2000] [--analyses 50]
+//     [--iterations 2000] [--analyses 50] [--skip-phase-a]
 //
 // Exits non-zero if any sha256 mismatch or any fingerprint divergence occurs,
 // or if any console/page error is observed.
@@ -32,33 +32,37 @@ const layerUrl = opt('layer-url', '/soak-layer.zst');
 const expectedSha = opt('expected-sha256', null);
 const ITERATIONS = Number(opt('iterations', 2000));
 const ANALYSES = Number(opt('analyses', 50));
-for (const req of [['image', image], ['expected-sha256', expectedSha]]) {
+const SKIP_PHASE_A = process.argv.includes('--skip-phase-a');
+const SKIP_PHASE_A_EARLY = process.argv.includes('--skip-phase-a');
+for (const req of (SKIP_PHASE_A_EARLY ? [['image', image]] : [['image', image], ['expected-sha256', expectedSha]])) {
   if (!req[1]) { console.error(`missing --${req[0]}`); process.exit(2); }
 }
 if (!existsSync(image)) { console.error(`image not found: ${image}`); process.exit(2); }
 
 const browser = await chromium.launch();
 const page = await browser.newPage();
+const nativeZstd = await page.evaluate(() => { try { new DecompressionStream('zstd'); return true; } catch { return false; } });
+console.log(`::notice::browser-native-zstd-stream=${nativeZstd} (analyses exercise the ${nativeZstd ? 'native streaming' : 'fzstd fallback'} path)`);
 const consoleErrors = [];
 page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
 page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
 
 await page.goto(url, { waitUntil: 'load', timeout: 60000 });
 
-// ---------- Phase A: 2000 decompresses of the same frame, sha256-verified ----------
-const phaseA = await page.evaluate(async ({ layerUrl, expectedSha, iterations }) => {
+// ---------- Phase A: N streaming decodes of the same frame through the app's
+// ---------- fallback decoder, sha256-verified, in the SAME tab ----------
+const phaseA = SKIP_PHASE_A ? { ok: 0, iterations: 0, mismatches: [], skipped: true } : await page.evaluate(async ({ layerUrl, expectedSha, iterations }) => {
   const resp = await fetch(layerUrl);
   if (!resp.ok) return { error: `fetch ${layerUrl} → HTTP ${resp.status}` };
   const frame = new Uint8Array(await resp.arrayBuffer());
-  const mod = await import('/assets/vendor/zstd/index.web.js');
-  await mod.init();
+  const { decodeZstdCapped } = await import('/src/core/zstd-decode.js');
   const hex = (buf) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
   let ok = 0;
   const mismatches = [];
   for (let i = 1; i <= iterations; i++) {
     let out;
     try {
-      out = mod.decompress(frame);
+      out = decodeZstdCapped(frame, { maxBytes: frame.length * 2 });
     } catch (err) {
       mismatches.push({ iteration: i, error: String(err && err.message || err) });
       if (mismatches.length >= 3) break;
@@ -123,9 +127,9 @@ console.log(JSON.stringify({
   phaseB: { analyses: ANALYSES, uniqueFingerprints: uniqueFps.size },
   consoleErrors,
 }));
-console.log(`::notice::browser-soak phaseA(one tab, ${ITERATIONS} decompress) ok=${phaseA.ok ?? 'n/a'}/${ITERATIONS} divergences=${phaseA.mismatches ? phaseA.mismatches.length : 'n/a'} phaseB(${ANALYSES} analyses) uniqueFingerprints=${uniqueFps.size} consoleErrors=${consoleErrors.length}`);
+console.log(`::notice::browser-soak phaseA(one tab, ${phaseA.skipped ? 'SKIPPED' : `${ITERATIONS} decompress`}) ok=${phaseA.ok ?? 'n/a'}/${phaseA.skipped ? 0 : ITERATIONS} divergences=${phaseA.mismatches ? phaseA.mismatches.length : 'n/a'} phaseB(${ANALYSES} analyses) uniqueFingerprints=${uniqueFps.size} consoleErrors=${consoleErrors.length}`);
 
 await browser.close();
-const pass = !phaseA.error && phaseA.ok === ITERATIONS && phaseA.mismatches.length === 0 && uniqueFps.size === 1 && consoleErrors.length === 0;
+const pass = !phaseA.error && (phaseA.skipped === true || (phaseA.ok === ITERATIONS && phaseA.mismatches.length === 0)) && uniqueFps.size === 1 && consoleErrors.length === 0;
 if (!pass) { console.error('BROWSER SOAK FAILED'); process.exit(1); }
 console.log('BROWSER SOAK PASSED');

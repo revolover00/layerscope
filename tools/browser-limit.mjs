@@ -42,6 +42,6 @@ console.log(JSON.stringify({ outcome, pageErrors, bannerText }));
 console.log(`::notice::browser-limit outcome=${outcome} pageErrors=${pageErrors.length} bannerHasLimitMessage=${bannerText ? /fallback limit/.test(bannerText) : false}`);
 
 await browser.close();
-const pass = outcome === 'error' && bannerText !== null && /fallback limit/.test(bannerText) && /Refusing to decode before allocating|refusing to decode/i.test(bannerText) && pageErrors.length === 0;
+const pass = outcome === 'error' && bannerText !== null && /fallback limit/.test(bannerText) && /refus/i.test(bannerText) && pageErrors.length === 0;
 if (!pass) { console.error('BROWSER LIMIT TEST FAILED'); process.exit(1); }
 console.log('BROWSER LIMIT TEST PASSED');

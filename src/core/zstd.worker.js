@@ -1,24 +1,23 @@
-// ESM module worker — one fresh copy of the vendored zstd decoder for ONE
-// analysis. Each page analysis spawns a worker (own global scope ⇒ own fresh
-// WASM instance), decodes the layers, and the analysis terminates the worker
-// afterwards, deterministically destroying the WASM linear memory — which can
-// never shrink in place. Measured necessity: the shared module produced a
-// DIFFERENT decompression of the same frame on its second analysis in
-// Chromium (caught by the diff_ids integrity check).
+// ESM module worker — the browser's zstd fallback decoder runtime.
+//
+// One worker per analysis. It decodes every zstd-fallback layer of ONE
+// analysis with the pure-JS fzstd streaming decoder (src/core/zstd-decode.js)
+// and is terminated when the analysis ends (analyzeImage's finally). fzstd
+// carries no shared linear memory — every decode builds a fresh internal
+// state object — so cross-analysis decoder degradation is structurally
+// impossible. The worker still isolates the decode from the page: blocking
+// multi-hundred-MB decodes never freeze the UI, and a decoder bug cannot
+// corrupt the app's own heap.
 
-import { init, decompress } from '../../assets/vendor/zstd/index.web.js';
+import { decodeZstdCapped } from './zstd-decode.js';
 
-const ready = init(); // fetches + compiles + instantiates once per worker
-
-self.onmessage = async (e) => {
-  const { id, buffer, offset, length, defaultHeapSize } = e.data || {};
+self.onmessage = (e) => {
+  const { id, buffer, offset, length, maxBytes } = e.data || {};
   try {
-    await ready;
-    const bytes = new Uint8Array(buffer, offset || 0, length ?? buffer.byteLength);
-    const out = decompress(bytes, { defaultHeapSize });
-    // out is already an independent copy of the decoder's output
+    const frame = new Uint8Array(buffer, offset || 0, length ?? buffer.byteLength);
+    const out = decodeZstdCapped(frame, { maxBytes: maxBytes ?? Number.MAX_SAFE_INTEGER });
     self.postMessage({ id, ok: true, bytes: out.buffer }, [out.buffer]);
   } catch (err) {
-    self.postMessage({ id, ok: false, error: String((err && err.message) || err) });
+    self.postMessage({ id, ok: false, error: String((err && err.message) || err), code: err && err.code });
   }
 };
