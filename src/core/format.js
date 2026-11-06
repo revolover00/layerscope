@@ -14,6 +14,13 @@ export function formatBytes(bytes) {
   return `${value >= 100 ? value.toFixed(0) : value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
 }
 
+export function formatPercentBig(ratio) {
+  // for absurd ratios (user bytes tiny): thousands-grouped integer percent
+  const pct = ratio * 100;
+  if (pct < 1000) return formatPercent(ratio, 1);
+  return `${formatCount(Math.round(pct))}%`;
+}
+
 export function formatPercent(ratio, digits = 1) {
   if (!Number.isFinite(ratio)) return '—';
   return `${(ratio * 100).toFixed(digits)}%`;
