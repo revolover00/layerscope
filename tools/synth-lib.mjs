@@ -156,21 +156,42 @@ export function tarballOf(files) {
  *         layers: Entry[][], history: History[]|null, repoTag: string }
  */
 export function synthesizeRaw(spec) {
-  const repoTag = spec.repoTag || 'fixture:latest';
-  const layerTars = spec.layers.map((entries) => buildLayerTar(entries));
-  const diffIds = layerTars.map(sha256);
-  const configJson = dockerConfig(diffIds, spec.history);
-  const configDigest = sha256(configJson);
-
   if (spec.compression === 'zstd') {
-    // checked by callers before calling; synthesizing zstd layers needs a compressor
-    throw new Error('zstd synthesis is not available in this environment');
+    throw new Error('zstd synthesis is asynchronous (wasm compressor) — use synthesizeRawAsync');
   }
+  const layerTars = spec.layers.map((entries) => buildLayerTar(entries));
+  return assembleArchive(spec, layerTars, compressLayersSync(spec, layerTars));
+}
 
-  const layerBlobs = layerTars.map((t) => {
+/** Async twin of synthesizeRaw: identical output, but zstd layers are compressed with the wasm decoder. */
+export async function synthesizeRawAsync(spec) {
+  const layerTars = spec.layers.map((entries) => buildLayerTar(entries));
+  const layerBlobs = await compressLayersAsync(spec, layerTars);
+  return assembleArchive(spec, layerTars, layerBlobs);
+}
+
+function compressLayersSync(spec, layerTars) {
+  return layerTars.map((t) => {
     if (spec.format === 'legacy') return t;
     return spec.compression === 'gzip' ? gzipSync(t, { level: 9 }) : t;
   });
+}
+
+async function compressLayersAsync(spec, layerTars) {
+  if (spec.compression !== 'zstd') return compressLayersSync(spec, layerTars);
+  if (spec.format === 'legacy') return layerTars; // legacy: uncompressed layers
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const mod = require('@bokuweb/zstd-wasm');
+  await mod.init();
+  return layerTars.map((t) => Buffer.from(mod.compress(t, 3)));
+}
+
+function assembleArchive(spec, layerTars, layerBlobs) {
+  const repoTag = spec.repoTag || 'fixture:latest';
+  const diffIds = layerTars.map(sha256);
+  const configJson = dockerConfig(diffIds, spec.history);
+  const configDigest = sha256(configJson);
 
   const files = [];
   const addFile = (name, data, mode) => files.push({ name, data, mode });
@@ -179,7 +200,7 @@ export function synthesizeRaw(spec) {
     digest: `sha256:${sha256(blobBuf)}`,
     mediaType: spec.format === 'legacy'
       ? 'application/vnd.docker.image.rootfs.diff.tar'
-      : `application/vnd.oci.image.layer.v1.tar${spec.compression === 'gzip' ? '+gzip' : ''}`,
+      : `application/vnd.oci.image.layer.v1.tar${spec.compression === 'gzip' ? '+gzip' : spec.compression === 'zstd' ? '+zstd' : ''}`,
     size: blobBuf.length,
   }));
 

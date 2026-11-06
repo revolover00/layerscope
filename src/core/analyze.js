@@ -12,6 +12,7 @@
 // File *contents* are never read; layer blobs are streamed and discarded.
 
 import { iterTarEntries, readBlobSlice, blobReadableStream } from './tar.js';
+import { nativeZstdStream, decompressZstd } from './zstd.js';
 import {
   FileTree,
   treeAddEntry,
@@ -48,19 +49,24 @@ async function sniffCompression(blob, offset) {
   return 'none';
 }
 
-function layerStream(blob, offset, size, compression) {
-  const base = blobReadableStream(blob, offset, offset + size);
+async function layerStream(blob, offset, size, compression) {
+  if (compression === 'none') {
+    return blobReadableStream(blob, offset, offset + size);
+  }
   if (compression === 'gzip') {
-    return base.pipeThrough(new DecompressionStream('gzip'));
+    return blobReadableStream(blob, offset, offset + size).pipeThrough(new DecompressionStream('gzip'));
   }
-  if (compression === 'zstd') {
-    try {
-      return base.pipeThrough(new DecompressionStream('zstd'));
-    } catch (err) {
-      throw new Error(`zstd-compressed layer is not supported by this browser (${err.message}). Convert layers to gzip.`);
-    }
+  // zstd: prefer the browser's native streaming decoder; otherwise fall back to
+  // the vendored WASM decoder (one-shot over the whole layer — memory grows with
+  // the layer's size, not the archive's; gzip stays fully streaming).
+  if (nativeZstdStream()) {
+    return blobReadableStream(blob, offset, offset + size).pipeThrough(new DecompressionStream('zstd'));
   }
-  return base;
+  const raw = new Uint8Array(await readBlobSlice(blob, offset, offset + size));
+  const out = await decompressZstd(raw);
+  return new ReadableStream({
+    start(controller) { controller.enqueue(out); controller.close(); },
+  });
 }
 
 /** Strip the conventional docker exec wrapper dive strips. */
@@ -236,7 +242,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20 
     let entryBytes = 0;
     let sawAny = false;
     try {
-      for await (const { header } of iterTarEntries(layerStream(blob, meta.dataOffset, meta.size, compression), {
+      for await (const { header } of iterTarEntries(await layerStream(blob, meta.dataOffset, meta.size, compression), {
         collectData: () => false,
       })) {
         sawAny = true;

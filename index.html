@@ -4,8 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="layerscope — inspect Docker images entirely in your browser. Layers, file diffs, wasted space, efficiency score and the 20 largest files. No uploads, no backend.">
+  <meta name="theme-color" content="#000000">
+  <meta property="og:title" content="layerscope — browser-only Docker image inspector">
+  <meta property="og:description" content="Drop a docker save tarball. Get per-layer diffs, wasted-space analysis and an efficiency score. Nothing leaves your browser.">
+  <meta property="og:type" content="website">
   <title>layerscope — browser-only Docker image inspector</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path fill='%23f2b33d' d='M16 2 3 10l13 8 13-8L16 2Zm-9 12.5L3 17.5 16 25l13-7.5-4-2.4L16 19.7 7 14.5Z'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path fill='%23ededed' d='M16 2 3 10l13 8 13-8L16 2Zm-9 12.5L3 17.5 16 25l13-7.5-4-2.4L16 19.7 7 14.5Z'/></svg>">
+  <link rel="preload" href="assets/fonts/geist-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/geist-sans-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
@@ -32,9 +38,21 @@
 <!-- ============ dropzone / landing view ============ -->
 <section id="landing" class="landing">
   <div class="container hero">
-    <p class="eyebrow">browser-only · no uploads · no backend</p>
+    <p class="eyebrow"><span class="eyebrow-dot"></span>Browser-only · no uploads · no backend</p>
     <h1>See inside your<br>Docker image.</h1>
     <p class="lede">Drop a <code>docker save</code> tarball and get per-layer file diffs, wasted-space analysis, an efficiency score and the largest files — computed locally, in seconds, on your machine. Your image never leaves the browser.</p>
+
+    <div class="hero-term" aria-hidden="false">
+      <div class="hero-term-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+      <div class="hero-term-body">
+        <span class="prompt">$</span>
+        <code class="hero-cmd" id="hero-cmd">docker save -o my-image.tar my-image:latest</code>
+        <button class="copy-btn" id="hero-cmd-copy" type="button" title="Copy command" aria-label="Copy the docker save command">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+          <span class="copy-btn-label" aria-live="polite">Copy</span>
+        </button>
+      </div>
+    </div>
 
     <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Choose a docker save tarball">
       <svg class="dz-icon" width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true">
@@ -54,9 +72,9 @@
     </div>
 
     <ul class="hero-facts">
-      <li><strong>Legacy + OCI</strong><span>manifest.json and index.json layouts, gzip layers via DecompressionStream</span></li>
-      <li><strong>Memory-safe</strong><span>File.slice streaming — multi-GB archives without loading them into memory</span></li>
-      <li><strong>dive-compatible</strong><span>same size, waste and efficiency definitions — cross-checked in CI</span></li>
+      <li><span class="fact-idx">01</span><strong>Legacy + OCI</strong><span class="fact-body">manifest.json and index.json layouts, gzip layers via DecompressionStream</span></li>
+      <li><span class="fact-idx">02</span><strong>Memory-safe</strong><span class="fact-body">File.slice streaming — multi-GB archives without loading them into memory</span></li>
+      <li><span class="fact-idx">03</span><strong>dive-compatible</strong><span class="fact-body">same size, waste and efficiency definitions — cross-checked in CI</span></li>
     </ul>
   </div>
 
@@ -226,7 +244,7 @@
     <div class="footer-col">
       <p class="footer-title">Honest limits</p>
       <ul>
-        <li>zstd-compressed layers need browser support for <code>DecompressionStream('zstd')</code> (not widely available) — use gzip.</li>
+        <li>zstd layers — supported: natively where the browser provides it, otherwise via the vendored WebAssembly decoder (one layer in memory). The oci-save-zstd fixture passes dive's golden.</li>
         <li>Whole-archive <code>.tar.gz</code> of a <code>docker save</code> output is not supported — save with uncompressed layers.</li>
         <li>Wasted-space math mirrors <a href="https://github.com/wagoodman/dive" rel="noopener" target="_blank">dive</a>; see README for verified/unverified claims.</li>
         <li>Compared against dive v0.13.1 on the CI sample images — numbers match exactly (see README).</li>
@@ -236,6 +254,10 @@
       <p class="footer-title">Privacy</p>
       <p>Everything happens locally in your browser tab. Nothing is uploaded, nothing is stored, no cookies, no analytics.</p>
     </div>
+  </div>
+  <div class="container footer-bottom">
+    <span>© 2026 revolover00 · MIT</span>
+    <span><a href="https://github.com/revolover00/layerscope" rel="noopener" target="_blank">github.com/revolover00/layerscope</a></span>
   </div>
 </footer>
 

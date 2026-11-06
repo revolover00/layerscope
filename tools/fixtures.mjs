@@ -3,7 +3,7 @@
 // the goldens dive itself produced (internal/imagefixture/testdata/golden/).
 // The specs below are a 1:1 port of the Go fixture definitions.
 
-import { synthesizeRaw } from './synth-lib.mjs';
+import { synthesizeRaw, synthesizeRawAsync } from './synth-lib.mjs';
 
 const dir = (name) => ({ name, typeflag: '5' });
 const file = (name, content, extra = {}) => ({ name, content: Buffer.from(content), ...extra });
@@ -170,6 +170,18 @@ export function buildFixture(name) {
   const spec = NAMED_FIXTURES[name];
   if (!spec) throw new Error(`unknown fixture: ${name}`);
   return synthesizeRaw({
+    format: spec.format,
+    compression: spec.compression,
+    layers: spec.layers,
+    history: spec.history,
+    repoTag: 'fixture:latest',
+  });
+}
+
+export async function buildFixtureAsync(name) {
+  const spec = NAMED_FIXTURES[name];
+  if (!spec) throw new Error(`unknown fixture: ${name}`);
+  return synthesizeRawAsync({
     format: spec.format,
     compression: spec.compression,
     layers: spec.layers,
