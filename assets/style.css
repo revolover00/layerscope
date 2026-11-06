@@ -377,6 +377,17 @@ code {
   .ld-stats { flex-wrap: wrap; }
 }
 
+/* narrow screens: let dense tables scroll horizontally instead of crushing columns */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.top-table, .wasted-table { min-width: 560px; }
+.table .num { white-space: nowrap; }
+
+@media (max-width: 640px) {
+  .size-bar-cell { display: none; }
+  .layer-cmd { max-width: 150px; font-size: 10.5px; }
+  .table td, .table th { padding-left: 6px; padding-right: 6px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
   html { scroll-behavior: auto; }
