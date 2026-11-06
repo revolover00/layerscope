@@ -16,7 +16,15 @@ self.onmessage = (e) => {
   try {
     const frame = new Uint8Array(buffer, offset || 0, length ?? buffer.byteLength);
     const out = decodeZstdCapped(frame, { maxBytes: maxBytes ?? Number.MAX_SAFE_INTEGER });
-    self.postMessage({ id, ok: true, bytes: out.buffer }, [out.buffer]);
+    // NOTE: the one-shot decode tier may return a VIEW onto a larger internal
+    // buffer (fzstd subarrays its window at offset 12). Transfer the whole
+    // buffer but carry the view's placement — flattening with `out.buffer`
+    // alone prepends fzstd's 12 sentinel bytes to the layer (corrupting the
+    // tar at offset 0) and the caller would see trailing garbage too.
+    self.postMessage(
+      { id, ok: true, bytes: out.buffer, byteOffset: out.byteOffset, byteLength: out.byteLength },
+      [out.buffer],
+    );
   } catch (err) {
     self.postMessage({ id, ok: false, error: String((err && err.message) || err), code: err && err.code });
   }

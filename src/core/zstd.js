@@ -47,11 +47,11 @@ export async function createZstd() {
       pending.clear();
     };
     worker.onmessage = (e) => {
-      const { id, ok, bytes, error } = e.data || {};
+      const { id, ok, bytes, byteOffset, byteLength, error } = e.data || {};
       const p = pending.get(id);
       if (!p) return;
       pending.delete(id);
-      if (ok) p.resolve(new Uint8Array(bytes));
+      if (ok) p.resolve(new Uint8Array(bytes, byteOffset || 0, byteLength ?? bytes.byteLength));
       else p.reject(new Error(error));
     };
     worker.onerror = (e) => failAll(new Error(`zstd worker failed: ${e.message || 'unknown error'}`));
