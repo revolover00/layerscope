@@ -20,7 +20,7 @@ docker save -o my-image.tar my-image:latest
 # then open the site and drop my-image.tar onto the page
 ```
 
-Or try the built-in demo (a synthetic image is generated in your browser).
+Or hit **Try a sample image** — it loads `layerscope/sample:latest`, a bundled 92 KiB docker-save archive (`assets/samples/layerscope-demo.tar`) with an `add → modify → delete` story so the wasted-bytes view has something to show.
 
 To run locally instead of the hosted site:
 
@@ -35,6 +35,7 @@ python3 -m http.server 8080        # or: npx serve .
   - legacy `docker save` format (`manifest.json` + `<id>/layer.tar`)
   - OCI layout (`index.json` + `blobs/sha256/...`), including dual-format archives
     that carry both
+- **Multi-manifest OCI indexes** — the manifest list in `index.json` (e.g. `docker buildx build --platform linux/amd64,linux/arm64` output) is turned into a platform picker; `linux/amd64` is analyzed by default, a warning names the selected manifest, an absent requested platform falls back with a warning, and re-selecting re-analyzes in place
 - **gzip-compressed layers**, decompressed on the fly with `DecompressionStream`
 - **zstd-compressed layers** — natively where the browser provides
   `DecompressionStream('zstd')`, otherwise through a vendored WebAssembly decoder
@@ -71,9 +72,12 @@ python3 -m http.server 8080        # or: npx serve .
   emits an uncompressed `.tar` already; layerscope expects exactly that and
   detects the outer gzip/zstd magic bytes to say so instead of failing with the
   generic "no manifest" error.
-- **OCI indexes with several manifests**: the first manifest is analyzed
-  (the `io.containerd.image.name` annotation is used as a weak hint when it
-  mentions amd64). A warning is shown; there is no platform picker.
+- **OCI indexes are platform-picked, not registry-resolved.** The picker
+  lists exactly the manifests present inside the archive's `index.json` —
+  layerscope never talks to a registry. Default selection is `linux/amd64`
+  (falling back to the first listed manifest if amd64 is absent), the analyzed
+  platform is always named in a warning, and falling back to the default for an
+  absent requested platform happens with a warning.
 - **Deletions are not "free".** A file deleted in a later layer still occupies
   space in the layer that added it — layerscope reports this as waste, which is
   the entire point. This intentionally makes deletion-heavy images look bad.
@@ -92,7 +96,7 @@ Numbers below are real output from this repository, not aspirations.
 
 ```
 $ npm test          # node --test
-# tests 15   # pass 15   # fail 0
+# tests 18   # pass 18   # fail 0
 ```
 
 ### layerscope vs. dive's own golden files
@@ -149,9 +153,11 @@ DIVE=/path/to/dive tools/check-samples.sh
 
 ### UI smoke test
 
-`tools/smoke-ui.mjs` (jsdom, no browser needed) loads `index.html`, clicks the
-demo button and walks the whole analysis view — layers, tabs, filters, gauge —
-asserting the DOM updates. `npm install && npm run smoke` → `SMOKE TEST PASSED`.
+`tools/smoke-ui.mjs` (jsdom, no browser needed) loads `index.html`, serves the
+bundled sample archive from disk in place of the HTTP fetch, clicks
+**Try a sample image** and walks the whole analysis view — layers, tabs,
+filters, gauge, platform-picker visibility — asserting the DOM updates.
+`npm install && npm run smoke` → `SMOKE TEST PASSED`.
 
 ### Design
 
@@ -159,14 +165,14 @@ The interface is a Vercel-style dark system: pure black canvas, hairline borders
 the Geist Sans/Mono pair (self-hosted woff2, `font-display: swap`), white-on-black
 primary action, monochrome panels with a single semantic signal color per state.
 Every view above was re-shot and checked after the re-skin — no horizontal
-overflow at 1440 px or 390 px, and the demo flow is unchanged.
+overflow at 1440 px or 390 px, and the sample flow is unchanged.
 
 ### Browser check (headless Chromium)
 
 Verified by driving a real Chromium (via playwright-core and
 `@sparticuz/chromium`, desktop 1440×900 and mobile 390×844, against the staged
-site that `pages.yml` deploys): landing page, invalid-file error path, demo
-analysis, file-path and kind filters, wasted-space filter, top-files scope
+site that `pages.yml` deploys): landing page, invalid-file error path, sample
+(then demo) analysis, file-path and kind filters, wasted-space filter, top-files scope
 toggle, back-to-landing navigation, and console/page errors — no horizontal
 overflow and no JS errors in any of those views. It found critical bugs jsdom
 could not see:
@@ -228,8 +234,8 @@ analyzing with `node tools/analyze.mjs` / in-memory blob (blob already resident)
 | overwrite.legacy.tar                           | 1.0 MB  | 3      | eff. 50.00%, wasted 1,048,689 B     | ~6 ms    |
 
 Heap growth during the 62 MB analysis: ~1.2 MiB (measured with
-`--expose-gc`; file bytes are never retained). Browser timings will differ; the demo
-image builds in under a second.
+`--expose-gc`; file bytes are never retained). Browser timings will differ; the bundled sample is 92 KiB and analyzes in
+milliseconds.
 ¹ Synthetic 6-layer OCI-save archive (gzip) generated with `tools/synth-lib.mjs`
 (~10.3 MiB of incompressible random data per layer, plus a 68-byte file duplicated
 across two layers). Content is random, so gzip achieves almost nothing.
@@ -242,7 +248,8 @@ assets/style.css        Vercel-inspired design system (self-hosted Geist, no fra
 assets/fonts/           Geist Sans/Mono woff2, subset latin, OFL (GEIST-LICENSE.txt)
 assets/vendor/zstd/     vendored @bokuweb/zstd-wasm 0.0.27 (MIT) — see assets/vendor/zstd/LICENSE.txt
 src/app.js              UI orchestration (dropzone, tabs, rendering)
-src/demo.js             in-browser synthetic demo image builder
+assets/samples/layerscope-demo.tar  bundled sample for "Try a sample image" (regenerate: node tools/make-sample.mjs)
+tools/make-sample.mjs   deterministic sample generator (seeded PRNG)
 src/core/tar.js         streaming tar parser (chunked, bounded memory)
 src/core/zstd.js        lazy zstd loader (native DecompressionStream, else vendored WASM)
 src/core/model.js       FileTree, whiteouts, squash/merge
@@ -256,6 +263,27 @@ samples/                Dockerfiles used by CI (add-delete, overwrite, multi-was
 .github/workflows/pages.yml static deploy to GitHub Pages
 ```
 
+## Credits
+
+- **[dive](https://github.com/wagoodman/dive)** (wagoodman, MIT) — layerscope's
+  per-layer file-diff model, whiteout/opaque-directory semantics, the efficiency
+  score and wasted-bytes definition, the "leaf nodes only" scoring rule, and the
+  `trimCommand` history handling are a direct port of dive's analysis logic.
+  dive's handwritten fixture suite and its golden analysis exports
+  (`internal/imagefixture/testdata/golden/`) are what `tools/verify-fixtures.mjs`
+  diffs against — see the verification section above for the comparison
+  methodology and tolerances. The CI sample comparison runs against the real
+  `dive` v0.13.1 CLI. layerscope does not vendor dive's Go code; it
+  re-implements the algorithm in JavaScript and validates equivalence against
+  the goldens.
+- **[@bokuweb/zstd-wasm](https://github.com/bokuweb/zstd-wasm)** (bokuweb, MIT) —
+  vendored in `assets/vendor/zstd/` as the WebAssembly fallback decoder for
+  zstd layers on browsers without native `DecompressionStream('zstd')`. Wraps
+  Meta's [Zstandard](https://github.com/facebook/zstd) (BSD-3-Clause).
+- **[Geist](https://github.com/vercel/geist-font)** (Vercel, OFL) — the
+  self-hosted Sans/Mono pair in `assets/fonts/`.
+
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Swappable — if a different license is needed for this codebase,
+the MIT text can be replaced wholesale.
