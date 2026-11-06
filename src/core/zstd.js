@@ -62,8 +62,23 @@ async function importFresh() {
   return mod;
 }
 
-/** A FRESH WASM instance (never cached). Callers must drop the reference when done. */
+/**
+ * The instance analyzeImage() should use.
+ *  - node:    a FRESH instance per analysis (the CJS build happily re-
+ *             instantiates; the whole require subtree is busted and evicted).
+ *             The analysis drops its reference in `finally`; node reclaims the
+ *             WASM heap at GC. Measured: arrayBuffers after GC returns to the
+ *             archive size (+0.01 MiB retained for a 150 MiB single layer).
+ *  - browser: the vendored ESM bundle is ONE module instance per page — its
+ *             static import graph (zstd.js/module.js) is cached by URL, so a
+ *             query-busted entry does not re-instantiate the wasm; re-init of
+ *             the shared Module also races (the module-level `initialized`
+ *             promise resolves only once). So the browser SHARES one instance
+ *             for the page. WebAssembly memory never shrinks in place — a page
+ *             reload is required to release it (documented in README).
+ */
 export async function createZstd() {
+  if (isBrowser()) return loadZstd();
   try {
     return await importFresh();
   } catch (err) {
