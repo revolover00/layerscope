@@ -4,6 +4,12 @@ All notable changes to layerscope are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- README restructured; long material moved to docs/
+
 ## [0.1.1] — 2026-11-07
 
 Released 2026-11-07 via tag `v0.1.1` on `34a1def` (squashed from PR #22).
