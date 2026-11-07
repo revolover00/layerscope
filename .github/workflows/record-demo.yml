@@ -1,0 +1,87 @@
+name: Record demo
+
+# Records tools/record-demo.mjs against the built site in real Chromium,
+# converts the video to assets/demo.gif (palettegen + paletteuse, 10 fps,
+# 900px wide, ≤ 4 MB enforced) and uploads the GIF + an mp4 copy as
+# artifacts. Manual trigger only; the GIF is committed to the repo only by
+# a separate human-reviewed PR.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  record-demo:
+    name: record README demo GIF
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Build the demo image tar (python:3.12-slim, same as the public-images job)
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/demo-recording
+          docker pull python:3.12-slim
+          docker save python:3.12-slim -o /tmp/demo-recording/python-3.12-slim.tar
+          ls -la /tmp/demo-recording
+
+      - name: Install Chromium (playwright-core)
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Serve the site and record the demo
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8321 --bind 127.0.0.1 >/tmp/http-demo.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          curl -fsS -o /dev/null http://127.0.0.1:8321/index.html
+          node tools/record-demo.mjs --url http://127.0.0.1:8321 \
+            --image /tmp/demo-recording/python-3.12-slim.tar \
+            --out-dir /tmp/demo-recording
+
+      - name: Convert to a 10fps 900px palette GIF (and an artifact-only mp4)
+        run: |
+          set -euo pipefail
+          command -v ffmpeg >/dev/null || { sudo apt-get update && sudo apt-get install -y ffmpeg; }
+          VIDEO=$(ls -t /tmp/demo-recording/*.webm | head -1)
+          echo "video: $VIDEO ($(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$VIDEO")s)"
+          ffmpeg -y -i "$VIDEO" \
+            -vf "fps=10,scale=900:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+            -loop 0 assets/demo.gif
+          ffmpeg -y -i "$VIDEO" -c:v libx264 -pix_fmt yuv420p -movflags faststart /tmp/demo-recording/demo.mp4
+          SZ=$(stat -c%s assets/demo.gif)
+          echo "demo.gif after primary pass: $SZ bytes"
+          if [ "$SZ" -gt 4000000 ]; then
+            ffmpeg -y -i "$VIDEO" \
+              -vf "fps=10,scale=760:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+              -loop 0 assets/demo.gif
+            SZ=$(stat -c%s assets/demo.gif)
+            echo "demo.gif after ladder-1 (10fps/760px): $SZ bytes"
+          fi
+          if [ "$SZ" -gt 4000000 ]; then
+            ffmpeg -y -i "$VIDEO" \
+              -vf "fps=8,scale=680:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+              -loop 0 assets/demo.gif
+            SZ=$(stat -c%s assets/demo.gif)
+            echo "demo.gif after ladder-2 (8fps/680px): $SZ bytes"
+          fi
+          [ "$(stat -c%s assets/demo.gif)" -le 4000000 ] || { echo '::error::demo.gif still exceeds 4 MB after both ladders'; exit 1; }
+          DUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 assets/demo.gif)
+          echo "::notice::demo.gif duration=${DUR}s size=$(stat -c%s assets/demo.gif)B"
+
+      - name: Upload demo artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-recording
+          path: |
+            assets/demo.gif
+            /tmp/demo-recording/demo.mp4
+          retention-days: 7
