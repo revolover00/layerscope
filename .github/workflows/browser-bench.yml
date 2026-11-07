@@ -30,6 +30,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/bench
+          # deterministic fixtures for the assertion job (test1 = legacy docker-save,
+          # test3 = same content as OCI + zstd): 4 layers, wasted 5,652,480 bytes,
+          # efficiency ≈ 3.6% — asserted by tools/browser-fixtures.mjs
+          node tools/test-fixtures.mjs --out /tmp/bench
           # REAL compressible layer: export an alpine rootfs, recompress with zstd
           docker pull alpine:3.20
           cid=$(docker create alpine:3.20)
@@ -109,3 +113,16 @@ jobs:
           node tools/browser-limit.mjs --url http://127.0.0.1:8321 --image /tmp/bench/huge-claims-600mib.tar
           node tools/browser-limit.mjs --url http://127.0.0.1:8321 --image /tmp/bench/huge-claims-nofcs-600mib.tar
           node tools/browser-soak.mjs --url http://127.0.0.1:8321 --image /tmp/bench/bench12-zstd.tar --skip-phase-a --analyses 20
+
+      # runs after the bench above (shared Chromium install, same staged site root)
+      - name: Serve the site and assert fixture numbers in real Chromium
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8321 --bind 127.0.0.1 >/tmp/http-fix.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          curl -fsS -o /dev/null http://127.0.0.1:8321/index.html
+          node tools/browser-fixtures.mjs --url http://127.0.0.1:8321 \
+            --test1 /tmp/bench/test1-waste.tar \
+            --test3 /tmp/bench/test3-zstd.tar

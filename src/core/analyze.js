@@ -9,7 +9,12 @@
 //    path, whiteouts sizing the directory they remove from the squashed
 //    tree below, opaque markers ignored).
 //
-// File *contents* are never read; layer blobs are streamed and discarded.
+// File *contents* are only read when a layer is compressed — reading the
+// file list requires full local decompression (gzip via tar iteration, zstd
+// via the worker decoder). Uncompressed tar layers are parsed by skipping
+// header blocks; their contents are never read. zstd layers are also
+// sha256-hashed locally against the image config's rootfs.diff_ids.
+// Everything decodes in this process; nothing is uploaded.
 
 import { iterTarEntries, readBlobSlice, blobReadableStream } from './tar.js';
 import { nativeZstdStream, decompressZstd, createZstd, zstdFrameContentSize } from './zstd.js';

@@ -26,8 +26,18 @@ jobs:
         run: node tools/soak-zstd.mjs --iterations 2000 --analyses 50
 
       - name: Verify layerscope against dive's committed golden files
+        # The committed goldens (internal/imagefixture/testdata/golden/*.export.json)
+        # exist only on dive's main branch (introduced in dive#727, the stereoscope
+        # port). v0.13.1 — and every earlier tag — has no internal/imagefixture
+        # tree, so cloning a tag would silently skip this check. We pin the exact
+        # upstream commit the goldens were verified against instead of a moving
+        # branch head. When dive releases a tag containing the golden suite,
+        # switch this pin to that tag.
         run: |
-          git clone --depth 1 https://github.com/wagoodman/dive /tmp/dive-src
+          git init -q /tmp/dive-src
+          git -C /tmp/dive-src remote add origin https://github.com/wagoodman/dive
+          git -C /tmp/dive-src fetch -q --depth 1 origin e97febbeb6956b11f679f6d823762752185e3fef
+          git -C /tmp/dive-src checkout -q FETCH_HEAD
           DIVE_REPO=/tmp/dive-src node tools/verify-fixtures.mjs
 
   samples:
