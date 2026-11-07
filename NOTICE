@@ -1,0 +1,27 @@
+layerscope — third-party notices
+=================================
+
+The layerscope stacked-layers mark (site header, favicon, og.png) is original
+artwork: hand-authored SVG stroke paths committed to this repository. No
+third-party rights are claimed on it, beyond the project's own MIT license.
+
+The mark is a generic "stacked layers" metaphor and is not derived from any
+icon from Lucide, Feather, Heroicons or any other icon set.
+
+1. GitHub mark — topbar GitHub button (`index.html`)
+   Glyph: "mark-github" (16 × 16) from Octicons
+   https://github.com/primer/octicons
+   Copyright GitHub Inc. Released under the MIT License.
+   (Legacy octicons 16px path; outline-shaped brand glyph of GitHub.)
+
+2. Geist Sans / Geist Mono — `assets/fonts/*.woff2`
+   Copyright Vercel. SIL Open Font License 1.1.
+   License text: assets/fonts/GEIST-LICENSE.txt
+
+3. dive golden fixtures — `tools/` verification
+   dive (wagoodman) is MIT; its fixture golden exports are used for
+   verification only, not distributed as part of the site. See CHANGELOG.md
+   and docs/VERIFICATION.md.
+
+Daemon-connected sample comparison uses the released dive CLI; no dive source
+code is vendored in this repository.
