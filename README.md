@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
 [![v0.1.0](https://img.shields.io/badge/release-v0.1.0-black.svg)](https://github.com/revolover00/layerscope/releases/tag/v0.1.0)
 
-Built with AI assistance (Claude / an AI coding agent) and verified against dive v0.13.1.
+Built with AI assistance (Claude / an AI coding agent) and verified against dive: image comparisons use the released v0.13.1 CLI; golden files are pinned to upstream commit e97febb.
 
 **A browser-only Docker image inspector.** Drop a `.tar` produced by `docker save`
 and layerscope unpacks it *in your browser* — nothing is uploaded, no server is
