@@ -19,16 +19,19 @@
 
 import { chromium } from 'playwright-core';
 import { existsSync } from 'node:fs';
+import { LONG_TAG } from './test-fixtures.mjs';
 
 const args = process.argv.slice(2);
 const getArg = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
 const url = getArg('--url') || 'http://127.0.0.1:8321';
 const test1 = getArg('--test1');
 const test3 = getArg('--test3');
-if (!test1 || !test3) { console.error('usage: node tools/browser-fixtures.mjs --url URL --test1 tar --test3 tar'); process.exit(2); }
+const longname = getArg('--longname'); // optional: test4-longname.tar (header-card long-name check)
+if (!test1 || !test3) { console.error('usage: node tools/browser-fixtures.mjs --url URL --test1 tar --test3 tar [--longname tar]'); process.exit(2); }
 for (const [label, img] of [['test1-waste.tar', test1], ['test3-zstd.tar', test3]]) {
   if (!existsSync(img)) { console.error(`${label} not found: ${img}`); process.exit(2); }
 }
+if (longname && !existsSync(longname)) { console.error(`test4-longname.tar not found: ${longname}`); process.exit(2); }
 
 const EXPECTED = {
   layers: '4 layers',
@@ -109,9 +112,65 @@ for (const [name, img] of [['test1-waste.tar', test1], ['test3-zstd.tar', test3]
   await page.close();
 }
 
+// ---------- long repo tag must not leak into the "Total size" column ----------
+// Uploads the long-name fixture, then checks the #image-name header element:
+//   1. textContent is exactly the tag (analyzer renders RepoTags[0] as-is)
+//   2. title attribute carries the full string (hover discovery)
+//   3. its right edge never reaches the .summary-stats left edge
+//   4. it is one ellipsized line (white-space: nowrap; overflow: hidden; text-overflow: ellipsis)
+if (longname) {
+  const longBrowser = await chromium.launch();
+  const page = await longBrowser.newPage();
+  const consoleErrors = [];
+  page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
+
+  await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+  await page.setInputFiles('#file-input', longname);
+  const outcome = await Promise.race([
+    page.waitForFunction(() => {
+      const a = document.getElementById('analysis');
+      const o = document.getElementById('progress-overlay');
+      return a && !a.hidden && o && o.hidden;
+    }, null, { timeout: 300000, polling: 100 }).then(() => 'ok'),
+    page.waitForSelector('#error-box', { state: 'visible', timeout: 300000 }).then(() => 'error'),
+  ]);
+  if (outcome === 'error') {
+    const msg = await page.$eval('#error-box', (el) => el.textContent.trim());
+    fail('test4-longname.tar', `analysis failed in the browser for longname fixture: ${msg}`);
+  } else {
+    const r = await page.evaluate(() => {
+      const el = document.getElementById('image-name');
+      const stats = document.querySelector('.summary-stats');
+      const cs = getComputedStyle(el);
+      const elRect = el.getBoundingClientRect();
+      const statsRect = stats.getBoundingClientRect();
+      return {
+        text: el.textContent,
+        title: el.getAttribute('title'),
+        right: elRect.right,
+        statsLeft: statsRect.left,
+        whiteSpace: cs.whiteSpace,
+        overflow: cs.overflow,
+        textOverflow: cs.textOverflow,
+        innerWidth: window.innerWidth,
+      };
+    });
+    console.log(`::notice::browser-fixtures test4-longname.tar: ${JSON.stringify(r)}`);
+    if (r.text !== LONG_TAG) fail('test4-longname.tar', `#image-name text ${JSON.stringify(r.text)}, expected the full tag`);
+    if (r.title !== LONG_TAG) fail('test4-longname.tar', `title attribute ${JSON.stringify(r.title)}, expected the full tag`);
+    if (!(r.right <= r.statsLeft + 1)) fail('test4-longname.tar', `header overlaps .summary-stats: image-name right ${r.right} > stats left ${r.statsLeft}`);
+    if (r.whiteSpace !== 'nowrap') fail('test4-longname.tar', `white-space ${JSON.stringify(r.whiteSpace)}, expected nowrap (ellipsized single line)`);
+    if (r.overflow !== 'hidden') fail('test4-longname.tar', `overflow ${JSON.stringify(r.overflow)}, expected hidden`);
+    if (r.textOverflow !== 'ellipsis') fail('test4-longname.tar', `text-overflow ${JSON.stringify(r.textOverflow)}, expected ellipsis`);
+    if (consoleErrors.length) fail('test4-longname.tar', `console/page errors: ${consoleErrors.join(' | ')}`);
+  }
+  await longBrowser.close();
+}
+
 await browser.close();
 if (failures > 0 || anyConsoleErrors) {
   console.error(`browser-fixtures FAILED with ${failures} failure(s)`);
   process.exit(1);
 }
-console.log('::notice::browser-fixtures PASS — both fixtures report identical, expected numbers on all 3 uploads');
+console.log('::notice::browser-fixtures PASS — wasted-waste fixtures report identical numbers on all 3 uploads (longname header check ran when --longname was passed)');

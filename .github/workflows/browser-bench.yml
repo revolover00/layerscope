@@ -33,6 +33,8 @@ jobs:
           # deterministic fixtures for the assertion job (test1 = legacy docker-save,
           # test3 = same content as OCI + zstd): 4 layers, wasted 5,652,480 bytes,
           # efficiency ≈ 3.6% — asserted by tools/browser-fixtures.mjs
+          # test4-longname.tar: tiny image with a 76-char repoTag, used by the
+          # same job to pin the result header (no leakage into "Total size")
           node tools/test-fixtures.mjs --out /tmp/bench
           # REAL compressible layer: export an alpine rootfs, recompress with zstd
           docker pull alpine:3.20
@@ -125,4 +127,5 @@ jobs:
           curl -fsS -o /dev/null http://127.0.0.1:8321/index.html
           node tools/browser-fixtures.mjs --url http://127.0.0.1:8321 \
             --test1 /tmp/bench/test1-waste.tar \
-            --test3 /tmp/bench/test3-zstd.tar
+            --test3 /tmp/bench/test3-zstd.tar \
+            --longname /tmp/bench/test4-longname.tar

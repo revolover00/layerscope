@@ -128,7 +128,10 @@ function renderPlatformPicker(a) {
 // ---------------- render: overview ----------------
 
 function renderAnalysis(a, label) {
-  $('#image-name').textContent = a.imageName || label || 'unnamed image';
+  const fullName = a.imageName || label || 'unnamed image';
+  const nameEl = $('#image-name');
+  nameEl.textContent = fullName;
+  nameEl.title = fullName; // full name on hover; the head pins to one ellipsized line
   $('#chip-format').textContent = a.format;
   $('#chip-layers').textContent = `${a.layerCount} layer${a.layerCount === 1 ? '' : 's'}`;
   $('#chip-compressed').textContent = `${formatBytes(a.compressedArchiveBytes)} archive`;

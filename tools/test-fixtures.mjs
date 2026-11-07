@@ -18,7 +18,11 @@
 //
 // Usage:
 //   node tools/test-fixtures.mjs --out /tmp/layerscope-fixtures
-//       → writes <out>/test1-waste.tar and <out>/test3-zstd.tar
+//       → writes <out>/test1-waste.tar, <out>/test3-zstd.tar and <out>/test4-longname.tar
+//
+// LONG_TAG is the deliberately long repository tag (78 chars) used by
+// browser-fixtures.mjs to prove the result header can't leak into the
+// "Total size" column.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -69,18 +73,41 @@ const HISTORY = [
   { created_by: '/bin/sh -c sed -i s/a/c/ /app/config.txt' },
 ];
 
-const outDir = (() => {
-  const i = process.argv.indexOf('--out');
-  return i >= 0 ? process.argv[i + 1] : '/tmp/layerscope-fixtures';
-})();
-mkdirSync(outDir, { recursive: true });
+export const LONG_TAG = 'private.registry.example.com/team-platform/exec-builder-tools:2026.11.07-rc1';
 
-const legacy = synthesizeRaw({ format: 'legacy', compression: 'none', layers: layers(), history: HISTORY, repoTag: 'layerscope/test-waste:latest' });
-writeFileSync(join(outDir, 'test1-waste.tar'), legacy);
-console.log(`wrote ${join(outDir, 'test1-waste.tar')} (${legacy.length} bytes)`);
 
-const zstdBuf = await synthesizeRawAsync({ format: 'oci-save', compression: 'zstd', layers: layers(), history: HISTORY, repoTag: 'layerscope/test-zstd:latest' });
-writeFileSync(join(outDir, 'test3-zstd.tar'), zstdBuf);
-console.log(`wrote ${join(outDir, 'test3-zstd.tar')} (${zstdBuf.length} bytes)`);
+async function main() {
+  const outDir = (() => {
+    const i = process.argv.indexOf('--out');
+    return i >= 0 ? process.argv[i + 1] : '/tmp/layerscope-fixtures';
+  })();
+  mkdirSync(outDir, { recursive: true });
 
-console.log('expected (per ci assert): 4 layers, wasted 5652480 bytes, efficiency ≈ 3.6%');
+  const legacy = synthesizeRaw({ format: 'legacy', compression: 'none', layers: layers(), history: HISTORY, repoTag: 'layerscope/test-waste:latest' });
+  writeFileSync(join(outDir, 'test1-waste.tar'), legacy);
+  console.log(`wrote ${join(outDir, 'test1-waste.tar')} (${legacy.length} bytes)`);
+
+  const zstdBuf = await synthesizeRawAsync({ format: 'oci-save', compression: 'zstd', layers: layers(), history: HISTORY, repoTag: 'layerscope/test-zstd:latest' });
+  writeFileSync(join(outDir, 'test3-zstd.tar'), zstdBuf);
+  console.log(`wrote ${join(outDir, 'test3-zstd.tar')} (${zstdBuf.length} bytes)`);
+
+  const tinyLayers = [withDirs([
+    { name: 'etc/keep.txt', content: Buffer.from('keep-me: layerscope long-name fixture\n') },
+    { name: 'app/start.sh', content: Buffer.from('#!/bin/sh\necho fixture\n'), mode: 0o755 },
+  ])];
+  const tinyHistory = [
+    { created_by: '/bin/sh -c mkdir -p /app /etc && printf x > /etc/keep.txt' },
+    { created_by: 'CMD ["/app/start.sh"]', empty_layer: true },
+  ];
+  const longname = synthesizeRaw({ format: 'legacy', compression: 'none', layers: tinyLayers, history: tinyHistory, repoTag: LONG_TAG });
+  writeFileSync(join(outDir, 'test4-longname.tar'), longname);
+  console.log(`wrote ${join(outDir, 'test4-longname.tar')} (${longname.length} bytes)`);
+  console.log(`long tag (${LONG_TAG.length} chars): ${LONG_TAG}`);
+
+  console.log('expected (per ci assert): 4 layers, wasted 5652480 bytes, efficiency ≈ 3.6%');
+}
+
+const isMain = process.argv[1] && process.argv[1].endsWith('test-fixtures.mjs');
+if (isMain) {
+  await main();
+}
