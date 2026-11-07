@@ -4,7 +4,10 @@ All notable changes to layerscope are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] — 2026-11-06 (site & repo hardening)
+## [0.1.1] — 2026-11-07 (unreleased)
+
+Not tagged yet. Everything merged to `main` since v0.1.0, plus this
+release-prep sweep (accuracy of public docs).
 
 ### Added
 
@@ -25,12 +28,30 @@ All notable changes to layerscope are documented here. The format follows
   still verified byte-exact against dive's goldens (17/17)
 - Unit tests pinning both metrics on synthetic images
   (`tests/reclaimable.test.mjs`)
+- `tools/test-fixtures.mjs` — deterministic generators for the two browser-bench
+  fixtures: `test1-waste.tar` (legacy docker-save layout) and `test3-zstd.tar`
+  (same content, OCI layout with zstd layers). The content spec: base layer
+  with 200 KiB random `app/config.txt` + small files; layer 2 adds a 5 MiB
+  random `data/big.bin`; layer 3 is the whiteout `data/.wh.big.bin`; layer 4
+  rewrites `app/config.txt` (200 KiB random); one `empty_layer` CMD history
+  entry. Analysis on both layouts: 4 layers, wasted **5,652,480 bytes**,
+  efficiency ≈ 3.6% (~3.62%).
+- Browser benchmark now asserts those exact numbers in real Chromium on every
+  push/PR (`tools/browser-fixtures.mjs` + new step in `browser-bench.yml`),
+  including identical stats across 3 consecutive uploads in the same page.
+- `tests/long-back-reference.test.mjs` — zstd frame with a 10 MiB
+  back-reference distance (> 8 MiB) decodes byte-identically through the
+  fallback decoder; includes an FCS-less variant so streamed-compression
+  windows are covered too.
+- `pull_request` trigger on the browser benchmark (it was `push`/dispatch
+  only), so the required check reports on every PR (#19)
 
 ### Fixed
 
-- README unit-test count corrected to 44/44; the headless-Chromium
-  verification note now names `playwright-core` + `browser-bench.yml`
-  instead of a non-dev dependency
+- README unit-test count corrected so it matches the actual suite (no
+  hard-coded number remains in prose; the CI badge is authoritative); the
+  headless-Chromium verification note now names `playwright-core` +
+  `browser-bench.yml` instead of a non-dev dependency
 - `src/core/analyze.js`: worker-lifetime comment no longer refers to the
   removed WebAssembly build
 - Removed the meta `Content-Security-Policy` added in 9789e7b: it broke the
@@ -43,7 +64,33 @@ All notable changes to layerscope are documented here. The format follows
   points at Reclaimable; the wasted-space panel documents the exact dive
   formula and the reclaimable rule; README explains both metrics with the
   `test3-zstd.tar` example (5.39 MB wasted, 3.6% efficiency, 5.20 MB reclaimable)
+- README "Image efficiency score and wasted bytes" bullet now states dive's
+  actual formulas (efficiency = Σ min ÷ Σ cumulative; wasted = full cumulative
+  of every path in ≥ 2 layers or deleted, surviving copy included); the
+  "File contents" bullet describes the real pipeline (uncompressed layers →
+  tar headers only; compressed layers → decompressed locally to read headers;
+  zstd → also sha256-hashed locally for the integrity check); nothing is uploaded
+- README gains an explicit AI-assistance disclosure line; hard-coded unit-test
+  counts were removed from prose (the CI badge is authoritative); the stale
+  CHANGELOG "corrected to 44/44" line now matches the actual suite
+- README and `tools/verify-fixtures.mjs` document exactly which dive ref the
+  golden-file check uses: dive's committed goldens exist only on dive `main`
+  (dive#727, the stereoscope port); the verifier pins upstream commit
+  `e97febbeb6956b11f679f6d823762752185e3fef`. Released dive v0.13.1 carries no
+  `internal/imagefixture` tree (verified), so cloning it makes every fixture
+  silently skip. The docker-daemon compare jobs keep using the released
+  v0.13.1 binary.
+- Backup tags `backup/*-pre-rewrite-2026-11-06` and merged session branches
+  were deleted on 2026-11-07 (the pre-rewrite history had been preserved there
+  by the history rewrite, including agent attribution trailers)
 
+### Changed
+
+- GitHub Actions refreshed: actions/checkout v4→v7, actions/setup-node v4→v7,
+  actions/upload-artifact v4→v7, actions/configure-pages v5→v6,
+  actions/upload-pages-artifact v3→v5, actions/deploy-pages v4→v5
+
+[0.1.1]: https://github.com/revolover00/layerscope/compare/v0.1.0...main
 [unreleased]: https://github.com/revolover00/layerscope/commits/main
 
 ## [0.1.0] — 2026-11-06
@@ -85,10 +132,12 @@ First public release.
 
 ### Development notes
 
-- History was rewritten to a single author (`revolover00`); the original
-  pre-rewrite history is preserved under the `backup/*-pre-rewrite-2026-11-06`
-  tags on the remote.
-- 44 node unit tests (`npm test`), 17/17 dive golden fixtures, decoder soak
+- History was rewritten to a single author (`revolover00`). The pre-rewrite
+  snapshot tags that were mentioned here (`backup/*-pre-rewrite-2026-11-06`)
+  were deleted on 2026-11-07; pre-rewrite commit SHAs remain reachable only
+  via pull-request refs.
+- Node unit tests (`npm test`; counts deliberately not hard-coded here — the
+  CI badge is authoritative), 17/17 dive golden fixtures, decoder soak
   green in CI, real-Chromium cold/warm timings in the Browser benchmark
   workflow.
 
