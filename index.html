@@ -78,13 +78,13 @@
 
     <div class="hero-alt">
       <span>Nothing to test with?</span>
-      <button id="sample-btn" class="btn btn-primary" type="button">Try a sample image</button>
-      <span class="hero-alt-note">bundled <code>layerscope/sample:latest</code> (92&nbsp;KiB) — a real <code>add → modify → delete</code> docker&nbsp;save archive</span>
+      <button id="sample-btn" class="btn btn-ghost" type="button">Try a sample image</button>
+      <span class="hero-alt-note">bundled <code>layerscope/sample:latest</code> (92&nbsp;KiB) — a real docker&nbsp;save archive with an <code>add → modify → delete</code> history</span>
     </div>
 
     <ul class="hero-facts">
       <li><span class="fact-idx">01</span><strong>Legacy + OCI</strong><span class="fact-body">manifest.json and index.json layouts, gzip layers via DecompressionStream</span></li>
-      <li><span class="fact-idx">02</span><strong>Memory-safe</strong><span class="fact-body">File.slice streaming — multi-GB archives without loading them into memory</span></li>
+      <li><span class="fact-idx">02</span><strong>Memory-safe</strong><span class="fact-body">Reads the archive in slices; memory scales with the largest layer (tested up to 150 MiB per layer)</span></li>
       <li><span class="fact-idx">03</span><strong>dive-compatible</strong><span class="fact-body">same size, waste and efficiency definitions — cross-checked in CI</span></li>
     </ul>
   </div>
@@ -237,7 +237,7 @@
         </div>
       </div>
       <div class="panel-head">
-        <div><h3>Wasted space by file</h3><p class="panel-sub">Paths present in more than one layer, largest first — same ordering as <code>dive</code>.</p></div>
+        <div><h3>Wasted space by file</h3><p class="panel-sub">Paths present in more than one layer, largest first.</p></div>
         <input id="wasted-filter" class="filter-input" type="search" placeholder="Filter paths…" aria-label="Filter wasted paths">
       </div>
       <div class="table-scroll">
@@ -257,15 +257,15 @@
   <div class="container footer-inner">
     <div class="footer-col">
       <p class="footer-title">layerscope</p>
-      <p>Analyze Docker images without uploading them. File contents are streamed past and discarded — only tar headers are read.</p>
+      <p>Analyze Docker images without uploading them. Nothing from your image is stored or uploaded. Layers are read as a stream and only tar headers are used for the analysis (zstd fallback layers are also hashed locally to verify them).</p>
     </div>
     <div class="footer-col">
-      <p class="footer-title">Honest limits</p>
+      <p class="footer-title">Limits</p>
       <ul>
         <li>zstd layers — supported: natively where the browser provides it, otherwise via the bundled pure-JS decoder (one layer in memory). The oci-save-zstd fixture passes dive's golden.</li>
         <li>Whole-archive <code>.tar.gz</code> of a <code>docker save</code> output is not supported — save with uncompressed layers.</li>
         <li>Wasted-space math mirrors <a href="https://github.com/wagoodman/dive" rel="noopener" target="_blank">dive</a>; see README for verified/unverified claims.</li>
-        <li>Compared against dive v0.13.1 on the CI sample images — numbers match exactly (see README).</li>
+        <li>Compared against dive v0.13.1 on the CI sample images — sizes, waste and counts match exactly; efficiency matches within 1e-9 (see README).</li>
       </ul>
     </div>
     <div class="footer-col">
