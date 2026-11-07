@@ -4,10 +4,9 @@ All notable changes to layerscope are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.1] — 2026-11-07 (unreleased)
+## [0.1.1] — 2026-11-07
 
-Not tagged yet. Everything merged to `main` since v0.1.0, plus this
-release-prep sweep (accuracy of public docs).
+Released 2026-11-07 via tag `v0.1.1` on `34a1def` (squashed from PR #22).
 
 ### Added
 
@@ -90,7 +89,7 @@ release-prep sweep (accuracy of public docs).
   actions/upload-artifact v4→v7, actions/configure-pages v5→v6,
   actions/upload-pages-artifact v3→v5, actions/deploy-pages v4→v5
 
-[0.1.1]: https://github.com/revolover00/layerscope/compare/v0.1.0...main
+[0.1.1]: https://github.com/revolover00/layerscope/releases/tag/v0.1.1
 [unreleased]: https://github.com/revolover00/layerscope/commits/main
 
 ## [0.1.0] — 2026-11-06
