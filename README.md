@@ -87,5 +87,8 @@ Built with AI assistance (Claude / an AI coding agent). Correctness is checked a
 - [dive](https://github.com/wagoodman/dive) (wagoodman, MIT): the analysis model, efficiency and wasted-bytes definitions are ported from it; its golden files are used for verification.
 - [fzstd](https://github.com/101Arrowz/fzstd) (101Arrowz, MIT): fallback zstd decoder.
 - [Geist](https://github.com/vercel/geist-font) (Vercel, OFL): fonts.
+- [Octicons](https://github.com/primer/octicons) `mark-github` (GitHub, MIT): the GitHub mark on the topbar's GitHub button. Text and svg layers artwork are original. See [NOTICE](NOTICE).
+
+layerscope is an independent project, not affiliated with or endorsed by Docker, Inc.
 
 [MIT](LICENSE)
