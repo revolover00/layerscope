@@ -1,34 +1,38 @@
 #!/usr/bin/env node
-// Records a short, natural demo of layerscope analyzing a deliberately
-// wasteful image, for the README GIF. Runs in CI (workflow record-demo.yml)
-// against the statically served site; nothing is uploaded anywhere.
+// Records a short, calm demo of layerscope analyzing a deliberately wasteful
+// image, for the README GIF. Runs in CI (workflow record-demo.yml) against the
+// statically served site; nothing is uploaded anywhere.
 //
-// Visuals:
-//   - a visible round cursor is injected into the page; every click is
-//     preceded by a Playwright mouse.move(.., { steps: 25 }) glide towards
-//     the target, a ~150 ms settle, a quick "press" scale animation, then
-//     down/up. The cursor element is position:fixed with z-index 2147483647
-//     and pointer-events:none, so it never blocks hits.
-//   - scrolling uses window.scrollTo({ behavior: 'smooth' }) — never jumps.
-//     The tab bar (.tabs) is pinned near the viewport top before the per-layer
-//     diff browsing, so it stays visible all the way through the Layers /
-//     Top 20 files / Wasted space views.
+// Rules (per review feedback):
+//   - no cursor overlay, nothing uses stored coordinates or page.mouse;
+//     every action is a locator.click() on a NAMED selector (role/text),
+//     after scrollIntoViewIfNeeded() and waiting for visibility;
+//   - viewport 1100x900 so the landing drop zone is fully visible;
+//   - smooth window scrolling only where needed, always behavior:'smooth'
+//     with a wait for scroll end;
+//   - after EVERY storyboard step, a PNG is saved and the selected tab /
+//     selected layer / active filter chip is asserted via DOM; the job fails
+//     if a step does not match;
+//   - app code is never touched.
 //
-// Timeline (target 20–25 s, fps=15 for the GIF):
-//   1.5 s landing   → upload → analysis (progress overlay visible)
-//   ~0.4 s gauge settle + 1.3 s summary hold
-//   3 × (cursor glide + layer click + "Added" chip + 1.1 s hold)
-//   Top 20 files tab (1.3 s) → Wasted space tab (1.3 s)
-//   smooth scroll back to the top (1.2 s)
-// Phase markers are printed so the conversion step (and review) can reason
-// about the timeline.
+// Storyboard (holds included; target 18–22 s):
+//   1. landing 1.5 s     2. upload → results wait     3. summary 2.5 s
+//   4. click layer with "build-essential" (apt-get install layer),
+//      click "Added" once, 2.5 s
+//   5. click layer with "rm -rf /var/lib/apt/lists" (cleanup layer),
+//      click "Deleted" once, 2.5 s
+//   6. click tab "Wasted space", 3.0 s
+//   7. click tab "Top 20 files", 2.5 s
+//   8. click tab "Layers", scroll to top, 1.0 s
 //
 // Usage:
-//   node tools/record-demo.mjs --url http://127.0.0.1:8321 --image /tmp/demo-recording/demo-waste.tar [--out-dir /tmp/layerscope-demo-rec]
-// Prints one DEMO_VIDEO <path> line with the recorded webm after the context closes.
+//   node tools/record-demo.mjs --url http://127.0.0.1:8321 --image /tmp/demo-recording/demo-waste.tar \
+//        [--out-dir /tmp/layerscope-demo-rec] [--screens-dir /tmp/demo-screens/steps]
+// Prints DEMO_VIDEO <path> with the recorded webm after the context closes.
 
 import { chromium } from 'playwright-core';
 import { mkdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import path from 'node:path';
 
 const args = process.argv.slice(2);
@@ -36,19 +40,20 @@ const getArg = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i 
 const url = getArg('--url') ?? 'http://127.0.0.1:8321';
 const image = getArg('--image') ?? 'assets/samples/layerscope-demo.tar';
 const outDir = getArg('--out-dir') ?? '/tmp/layerscope-demo-rec';
+const screensDir = getArg('--screens-dir') ?? '/tmp/demo-screens/steps';
 if (!existsSync(image)) { console.error(`image not found: ${image}`); process.exit(2); }
 mkdirSync(outDir, { recursive: true });
+mkdirSync(screensDir, { recursive: true });
 
 const t0 = Date.now();
 const mark = (label) => console.log(`DEMO_PHASE +${Date.now() - t0}ms ${label}`);
-const SCROLL_MS = 650;
 
 const browser = await chromium.launch();
 try {
   const context = await browser.newContext({
-    viewport: { width: 1100, height: 800 },
+    viewport: { width: 1100, height: 900 },
     deviceScaleFactor: 1,
-    recordVideo: { dir: outDir, size: { width: 1100, height: 800 } },
+    recordVideo: { dir: outDir, size: { width: 1100, height: 900 } },
   });
   const page = await context.newPage();
   page.on('pageerror', (e) => console.error(`[pageerror] ${e.message}`));
@@ -56,75 +61,45 @@ try {
   await page.goto(url, { waitUntil: 'load', timeout: 60000 });
   await page.waitForSelector('#dropzone', { state: 'visible', timeout: 10000 });
 
-  // ---- visible cursor -------------------------------------------------
-  await page.evaluate(() => {
-    const d = document.createElement('div');
-    d.id = '__demo-cursor';
-    d.style.cssText = [
-      'position:fixed',
-      'left:0', 'top:0',
-      'width:22px', 'height:22px',
-      'border-radius:50%',
-      'background:rgba(255,255,255,.95)',
-      'border:2px solid rgba(0,0,0,.6)',
-      'box-shadow:0 2px 10px rgba(0,0,0,.5)',
-      'pointer-events:none',
-      'z-index:2147483647',
-      'transform:translate(-50%,-50%)',
-      'transition:transform .09s ease-out',
-    ].join(';');
-    document.body.appendChild(d);
-    window.addEventListener('mousemove', (e) => {
-      d.style.left = `${e.clientX}px`;
-      d.style.top = `${e.clientY}px`;
-    }, true);
-    window.__demoPress = () => {
-      d.style.transform = 'translate(-50%,-50%) scale(0.72)';
-      setTimeout(() => { d.style.transform = 'translate(-50%,-50%) scale(1)'; }, 130);
-    };
-  });
-  mark('cursor-injected');
+  let stepNo = 0;
+  const shot = async (name) => {
+    stepNo += 1;
+    const p = join(screensDir, `${String(stepNo).padStart(2, '0')}-${name}.png`);
+    await page.screenshot({ path: p });
+    console.log(`DEMO_SCREEN ${p}`);
+  };
+  const assertOrDie = async (ok, msg) => {
+    if (ok) { console.log(`DEMO_ASSERT ok — ${msg}`); return; }
+    console.error(`::error::record-demo assert failed — ${msg}`);
+    await shot('assert-failed');
+    process.exit(1);
+  };
 
-  // small helpers --------------------------------------------------------
-  const glide = async (sel, nth = 0) => {
-    const box = await page.locator(sel).nth(nth).boundingBox();
-    if (!box) throw new Error(`no bounding box for ${sel} [${nth}]`);
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, { steps: 25 });
-    await page.waitForTimeout(150);
-  };
-  const tap = async (sel, nth = 0, after = 140) => {
-    await glide(sel, nth);
-    await page.evaluate(() => window.__demoPress && window.__demoPress());
-    await page.mouse.down();
-    await page.waitForTimeout(50);
-    await page.mouse.up();
-    await page.waitForTimeout(after);
-  };
-  const smoothScrollToTabs = async () => {
-    await page.evaluate(() => {
-      const t = document.querySelector('.tabs');
-      if (!t) { window.scrollTo({ top: 140, behavior: 'smooth' }); return; }
-      const top = t.getBoundingClientRect().top + window.scrollY - 12;
-      window.scrollTo({ top, behavior: 'smooth' });
-    });
-    await page.waitForTimeout(SCROLL_MS);
-  };
+  // smooth helpers (window scrolling only; never stored coordinates)
   const smoothScrollTop = async () => {
     await page.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
-    await page.waitForTimeout(SCROLL_MS);
+    await page.waitForFunction(() => window.scrollY === 0, null, { timeout: 3000, polling: 50 });
+  };
+  const smoothToRow = async (row) => {
+    // instant position is fine for row-level work; smooth only for page-level
+    await row.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(150);
   };
 
-  await page.waitForTimeout(1500); // breathe on the landing page
-  mark('page-open');
+  const clickTab = async (id) => {
+    const tab = page.locator(id);
+    await tab.scrollIntoViewIfNeeded();
+    await tab.waitFor({ state: 'visible' });
+    await tab.click();
+  };
 
-  // visible glide onto "Choose file…", then attach the tar (native file chooser if it fires)
-  const fileChooserPromise = page.waitForEvent('filechooser', { timeout: 4000 }).catch(() => null);
-  await tap('#browse-btn', 0, 80);
-  const chooser = await fileChooserPromise;
-  if (chooser) await chooser.setFiles(image);
-  else await page.setInputFiles('#file-input', image);
-  mark('upload-sent');
+  // ---------- 1. landing (1.5 s) ----------
+  await page.waitForTimeout(1500);
+  mark('landing');
+  await shot('landing');
 
+  // ---------- 2. upload, wait for analysis ----------
+  await page.setInputFiles('#file-input', image);
   const outcome = await Promise.race([
     page.waitForFunction(() => {
       const a = document.getElementById('analysis');
@@ -138,36 +113,105 @@ try {
     throw new Error(`analysis failed in the browser: ${msg}`);
   }
   mark('analysis-done');
+  await shot('analysis-done');
+  await assertOrDie(
+    await page.evaluate(() => {
+      const g = document.getElementById('gauge-value');
+      return g && /\d/.test(g.textContent);
+    }),
+    'analysis produced a numeric efficiency score',
+  );
 
-  // summary cards hold
-  await page.waitForTimeout(400);
-  await page.waitForTimeout(1300);
-  mark('summary-pause');
+  // ---------- 3. summary hold (2.5 s) ----------
+  await page.waitForTimeout(2500);
+  mark('summary');
+  await shot('summary');
 
-  // pin the tab bar (smooth) before the layer browsing
-  await smoothScrollToTabs();
-  mark('tabs-pinned');
+  // ---------- 4. apt-get install layer (build-essential), "Added" once ----------
+  const aptRow = page.locator('#layer-table tbody tr').filter({ hasText: 'build-essential' });
+  await smoothToRow(aptRow);
+  await aptRow.waitFor({ state: 'visible' });
+  await aptRow.click();
+  await page.locator('#ld-kind button[data-kind="added"]').click();
+  await page.waitForTimeout(300); // let the list re-filter
+  await shot('layer-install-added');
+  await assertOrDie(
+    await page.evaluate(() => {
+      const row = document.querySelector('#layer-table tbody tr.is-selected');
+      const chip = document.querySelector('#ld-kind .seg-btn[data-kind="added"]');
+      return row && row.textContent.includes('build-essential')
+        && chip && chip.classList.contains('is-active');
+    }),
+    'the build-essential layer is selected and the Added chip is active',
+  );
+  await page.waitForTimeout(2500);
+  mark('layer-install-hold');
 
-  const rowCount = await page.locator('#layer-table tbody tr').count();
-  for (let i = 0; i < Math.min(3, rowCount); i++) {
-    await tap('#layer-table tbody tr', i, 120);
-    // show real files in the diff list (first rows default to "MODIFIED /")
-    await tap('#ld-kind button[data-kind="added"]', 0, 120);
-    await page.waitForTimeout(1100);
-    mark(`layer-${i + 1}`);
-  }
+  // ---------- 5. cleanup layer (rm -rf /var/lib/apt/lists), "Deleted" once ----------
+  const rmRow = page.locator('#layer-table tbody tr').filter({ hasText: 'rm -rf /var/lib/apt/lists' });
+  await smoothToRow(rmRow);
+  await rmRow.waitFor({ state: 'visible' });
+  await rmRow.click();
+  await page.locator('#ld-kind button[data-kind="deleted"]').click();
+  await page.waitForTimeout(300); // let the list re-filter
+  await shot('layer-cleanup-deleted');
+  await assertOrDie(
+    await page.evaluate(() => {
+      const row = document.querySelector('#layer-table tbody tr.is-selected');
+      const chip = document.querySelector('#ld-kind .seg-btn[data-kind="deleted"]');
+      return row && row.textContent.includes('rm -rf /var/lib/apt/lists')
+        && chip && chip.classList.contains('is-active');
+    }),
+    'the rm -rf /var/lib/apt/lists layer is selected and the Deleted chip is active',
+  );
+  await page.waitForTimeout(2500);
+  mark('layer-cleanup-hold');
 
-  await tap('#tab-top', 0, 120);
-  await page.waitForTimeout(1300);
-  mark('tab-top');
+  // ---------- 6. tab "Wasted space" (3.0 s) ----------
+  await clickTab('#tab-wasted');
+  await page.waitForTimeout(200);
+  await shot('wasted-space');
+  await assertOrDie(
+    await page.evaluate(() => {
+      const tab = document.getElementById('tab-wasted');
+      const panel = document.getElementById('panel-wasted');
+      return tab.classList.contains('is-active') && panel && !panel.hidden;
+    }),
+    'tab "Wasted space" is active and its panel is visible',
+  );
+  await page.waitForTimeout(3000);
+  mark('wasted-hold');
 
-  await tap('#tab-wasted', 0, 120);
-  await page.waitForTimeout(1300);
-  mark('tab-wasted');
+  // ---------- 7. tab "Top 20 files" (2.5 s) ----------
+  await clickTab('#tab-top');
+  await page.waitForTimeout(200);
+  await shot('top-20-files');
+  await assertOrDie(
+    await page.evaluate(() => {
+      const tab = document.getElementById('tab-top');
+      const panel = document.getElementById('panel-top');
+      return tab.classList.contains('is-active') && panel && !panel.hidden;
+    }),
+    'tab "Top 20 files" is active and its panel is visible',
+  );
+  await page.waitForTimeout(2500);
+  mark('top-20-hold');
 
+  // ---------- 8. tab "Layers", smooth scroll to top (1.0 s) ----------
+  await clickTab('#tab-layers');
+  await page.waitForTimeout(150);
   await smoothScrollTop();
-  await page.waitForTimeout(1200);
-  mark('top-again');
+  await shot('layers-top');
+  await assertOrDie(
+    await page.evaluate(() => {
+      const tab = document.getElementById('tab-layers');
+      const panel = document.getElementById('panel-layers');
+      return tab.classList.contains('is-active') && panel && !panel.hidden && window.scrollY === 0;
+    }),
+    'tab "Layers" is active and the page is at the top',
+  );
+  await page.waitForTimeout(1000);
+  mark('top-hold');
 
   const video = page.video();
   await page.close();

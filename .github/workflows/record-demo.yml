@@ -7,7 +7,9 @@ name: Record demo
 # (800px wide, 15 fps, palettegen + paletteuse, dither=none, ≤ 6 MB enforced,
 # shrink ladder 720px before any fps reduction) and uploads the GIF plus an
 # artifact-only H.264/yuv420p/30fps mp4 (-crf 23 -preset veryfast faststart,
-# ≤ 9 MB enforced). Manual trigger only; the GIF is committed to the repo only
+# ≤ 9 MB enforced). The recorder saves per-step PNGs with DOM assertions;
+# the job builds a 12-frame contact sheet from the mp4 and uploads both as a
+# second artifact. Manual trigger only; the GIF is committed to the repo only
 # by a separate human-reviewed PR.
 
 on:
@@ -96,6 +98,17 @@ jobs:
           MDUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$MP4")
           echo "::notice::demo.gif duration=${GDUR}s size=$(stat -c%s assets/demo.gif)B | demo.mp4 duration=${MDUR}s size=${MS}B"
 
+      - name: Record screens upload + build contact sheet
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/demo-screens
+          ls -la /tmp/demo-screens/steps
+          MP4=/tmp/demo-recording/demo.mp4
+          DUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$MP4")
+          FPS=$(python3 -c "print(12 / float('$DUR'))")
+          ffmpeg -y -i "$MP4" -vf "fps=${FPS},scale=320:-1,tile=4x3" -frames:v 1 /tmp/demo-screens/contact-sheet.png
+          ls -la /tmp/demo-screens
+
       - name: Upload demo artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -103,4 +116,13 @@ jobs:
           path: |
             assets/demo.gif
             /tmp/demo-recording/demo.mp4
+          retention-days: 7
+
+      - name: Upload per-step screenshots and contact sheet
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-screens
+          path: |
+            /tmp/demo-screens/steps/*.png
+            /tmp/demo-screens/contact-sheet.png
           retention-days: 7
