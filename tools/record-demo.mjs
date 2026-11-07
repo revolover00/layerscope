@@ -4,13 +4,11 @@
 // statically served site; nothing is uploaded anywhere — the file never
 // leaves the runner (or this machine).
 //
-// Video timing (fractions of the video; fps=10 for the GIF):
-//   0.0s  landing → upload → analysis runs (progress overlay visible)
-//   analysis-done + 1.5s  summary cards (Total / Wasted / Reclaimable / efficiency)
-//   + 3 × 1.2s  layer detail clicks (up to 3 layers)
-//   + tabs "Top 20 files" and "Wasted space" (1.4s / 1.6s pauses)
-// Target: total length 20–25 s. Phase markers are printed so the conversion
-// step (and human review) can reason about the timeline.
+// Video timeline (fps=10 for the GIF, target 20–25 s total): video ≈
+// 1 s landing hold + upload + analysis + ~1 s gauge settle + 4.5 s summary
+// hold (Total / Wasted / Reclaimable / efficiency) + 3 × 2.1 s layer-detail
+// clicks + 3.0 s Top 20 files tab + 4.0 s Wasted space tab. Phase markers are
+// printed so the conversion step (and human review) can reason about the timeline.
 //
 // Usage:
 //   node tools/record-demo.mjs --url http://127.0.0.1:8321 --image /tmp/python-3.12-slim.tar [--out-dir /tmp/layerscope-demo-rec]
@@ -43,6 +41,7 @@ try {
 
   await page.goto(url, { waitUntil: 'load', timeout: 60000 });
   await page.waitForSelector('#dropzone', { state: 'visible', timeout: 10000 });
+  await page.waitForTimeout(1000); // let the hero settle before the upload starts
   mark('page-open');
 
   await page.setInputFiles('#file-input', image);
@@ -62,25 +61,25 @@ try {
   }
   mark('analysis-done');
 
-  // let gauges/counters settle, then hold the summary for ~1.5 s
+  // let gauges/counters settle, then hold the summary for ~4.5 s
   await page.waitForTimeout(400);
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(4500);
   mark('summary-pause');
 
   const rows = page.locator('#layer-table tbody tr');
   const rowCount = await rows.count();
   for (let i = 0; i < Math.min(3, rowCount); i++) {
     await rows.nth(i).click();
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(2100);
     mark(`layer-${i + 1}`);
   }
 
   await page.click('#tab-top');
-  await page.waitForTimeout(1400);
+  await page.waitForTimeout(3000);
   mark('tab-top');
 
   await page.click('#tab-wasted');
-  await page.waitForTimeout(1600);
+  await page.waitForTimeout(4000);
   mark('tab-wasted');
 
   const video = page.video();
