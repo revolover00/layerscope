@@ -17,6 +17,13 @@ involved. It shows what each layer adds/modifies/deletes, which files are dead
 weight in earlier layers, how "efficient" the image is, and the 20 largest
 files inside it.
 
+<p align="center">
+  <img src="assets/demo.gif" alt="layerscope analyzing a docker-save tarball in the browser: per-layer breakdown, wasted-space estimate, efficiency score and the 20 largest files — nothing leaves the machine" width="1100">
+</p>
+<p align="center">
+  <sub>Recorded on <a href="https://revolover00.github.io/layerscope/">the live site</a> against a <strong>deliberately wasteful</strong> example image (cleanup in a separate layer) — reproduce it with <code>docker save myimage:tag -o image.tar</code>, or drop the bundled <code>assets/samples/layerscope-demo.tar</code> onto the page to see the same story.</sub>
+</p>
+
 Live site: <https://revolover00.github.io/layerscope/>
 
 No install, no account, no backend. The whole app is static files.
