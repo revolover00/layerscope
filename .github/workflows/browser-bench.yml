@@ -5,17 +5,27 @@ name: Browser benchmark
 # on synthetic zstd images, a REAL compressible-layer image (an exported alpine
 # rootfs recompressed with zstd), the REAL python:3.12-slim rootfs as one layer,
 # and a 150 MiB single layer — plus a repeated-analysis consistency test.
+# A legacy docker-save fixture of about 3 GB (sparse zero files, generated on
+# the fly — nothing is committed) is built by the fixture steps and uploaded
+# through the real file input in Chromium; its numbers are asserted against
+# an independent Node reference analysis on the same file.
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      big_files_per_layer:
+        description: 'files per layer for the ~3 GB big fixture (1000 ≈ 3 GB; 682 ≈ 2 GB; 341 ≈ 1 GB)'
+        required: false
+        default: '1000'
+        type: string
 
 jobs:
   browser-bench:
     name: real-browser cold/warm analysis times
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -117,6 +127,16 @@ jobs:
           node tools/browser-soak.mjs --url http://127.0.0.1:8321 --image /tmp/bench/bench12-zstd.tar --skip-phase-a --analyses 20
 
       # runs after the bench above (shared Chromium install, same staged site root)
+      # ~3 GB legacy docker-save fixture for the browser fixture job: sparse
+      # file-bodies (holes), generated in seconds, nothing committed.
+      - name: Build the ~3 GB legacy docker-save big fixture (sparse zeros)
+        run: node tools/ci/build-big-legacy.mjs --out /tmp/bench/big-legacy.tar --files-per-layer "${{ github.event.inputs.big_files_per_layer || '1000' }}"
+
+      # independent reference analysis: same src/core/analyze.js code path as
+      # the browser, on a fs-backed Blob; writes /tmp/bench/big-expected.json
+      - name: Reference analysis of the big fixture (node)
+        run: node tools/ci/analyze-big.mjs /tmp/bench/big-legacy.tar --json /tmp/bench/big-expected.json && cat /tmp/bench/big-expected.json
+
       - name: Serve the site and assert fixture numbers in real Chromium
         run: |
           set -euo pipefail
@@ -129,3 +149,24 @@ jobs:
             --test1 /tmp/bench/test1-waste.tar \
             --test3 /tmp/bench/test3-zstd.tar \
             --longname /tmp/bench/test4-longname.tar
+
+      # ~3 GB fixture uploaded through the real file input (desktop viewport).
+      # Asserts the analysis finishes, zero console/page errors, and the
+      # layers/total/wasted/reclaimable/efficiency numbers equal the node
+      # reference analysis on the same file. RSS is not exposed to the page;
+      # peak JS heap is sampled in-page every 200 ms.
+      # If this step fails, the engine is NOT to be "fixed" here — see the
+      # PR body/report. Large sizes can be probed with:
+      #   gh workflow run browser-bench.yml --ref <branch> -f big_files_per_layer=682   # ~2 GB
+      #   gh workflow run browser-bench.yml --ref <branch> -f big_files_per_layer=341   # ~1 GB
+      - name: Serve the site and assert the ~3 GB big fixture in real Chromium (desktop)
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8321 --bind 127.0.0.1 >/tmp/http-big.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          curl -fsS -o /dev/null http://127.0.0.1:8321/index.html
+          node tools/browser-big.mjs --url http://127.0.0.1:8321 \
+            --image /tmp/bench/big-legacy.tar \
+            --expected /tmp/bench/big-expected.json
