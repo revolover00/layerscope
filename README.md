@@ -9,6 +9,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
 [![v0.1.0](https://img.shields.io/badge/release-v0.1.0-black.svg)](https://github.com/revolover00/layerscope/releases/tag/v0.1.0)
 
+Built with AI assistance (Claude / an AI coding agent) and verified against dive v0.13.1.
+
 **A browser-only Docker image inspector.** Drop a `.tar` produced by `docker save`
 and layerscope unpacks it *in your browser* — nothing is uploaded, no server is
 involved. It shows what each layer adds/modifies/deletes, which files are dead
@@ -23,7 +25,7 @@ No install, no account, no backend. The whole app is static files.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history. Highlights:
 
-- **v0.1.0** — first public release: zstd layers via native `DecompressionStream` or the bundled pure-JS **fzstd** decoder (no WebAssembly), every fallback layer sha256-verified against `rootfs.diff_ids`, 160 MiB hard cap enforced pre-allocation and mid-decode, dive-compatible efficiency/waste (17/17 dive goldens, 44/44 unit tests), OCI multi-arch picker, fully self-hosted static site.
+- **v0.1.0** — first public release: zstd layers via native `DecompressionStream` or the bundled pure-JS **fzstd** decoder (no WebAssembly), every fallback layer sha256-verified against `rootfs.diff_ids`, 160 MiB hard cap enforced pre-allocation and mid-decode, dive-compatible efficiency/waste (17/17 dive goldens), OCI multi-arch picker, fully self-hosted static site.
 - **Site & repo hardening (2026-11-06)** — branded [404](404.html) page, social-preview card + `og:`/`twitter:` tags, `robots.txt` + `sitemap.xml`, private reporting in [SECURITY.md](SECURITY.md), contributor invariants in [CONTRIBUTING.md](CONTRIBUTING.md), changelog, PR/issue templates.
 
 ## Quick start
@@ -67,14 +69,13 @@ python3 -m http.server 8080        # or: npx serve .
   files **added / modified / deleted** (whiteouts `.wh.<name>`, opaque dirs
   `.wh..wh..opq`), with type-aware metadata (sizes, old→new size on modify,
   "hidden bytes" reported for whiteouts of known lower-layer files/dirs)
-- **Image efficiency score and wasted bytes**, using the same definition as
-  [dive](https://github.com/wagoodman/dive): per path, the minimum occurrence
-  across layers is "useful", everything beyond the minimum is waste.
-  Whiteouts sizing the squashed directory they remove count as occurrences.
-  The first (base) layer is excluded from the user-waste percentage.
+- **Image efficiency score and wasted bytes**, using [dive](https://github.com/wagoodman/dive)'s definitions: efficiency is Σ min(occurrence sizes) ÷ Σ cumulative sizes, and **wasted bytes** is the total bytes of every path seen in more than one layer or deleted — **including the copy that still exists** (the surviving copy). Whiteouts sizing the squashed directory they remove count as occurrences. The first (base) layer is excluded from the user-waste percentage.
 - **Top 20 largest files**, two scopes: largest single layer entries across the
   whole image, and largest files in the final squashed image
-- **File contents are never read** — everything is computed from tar headers
+- **File contents:** for uncompressed layers only tar headers are read; for
+  compressed layers the data is decompressed locally in the browser to read
+  those headers (zstd layers are additionally hashed locally — sha256 — to
+  verify the image config's `diff_ids`). Nothing is uploaded.
 - **Large files** are handled by streaming the archive in slices (`Blob.slice`)
   through `DecompressionStream`; the outer archive is never loaded whole into
   memory. Memory scales with the **largest single layer**, not with the archive's
@@ -135,7 +136,7 @@ Numbers below are real output from this repository, not aspirations.
 
 ```
 $ npm test          # node --test
-# tests 44   # pass 44   # fail 0
+# tests 49   # pass 49   # fail 0
 ```
 
 ### layerscope vs. dive's own golden files
@@ -146,8 +147,20 @@ every synthesized fixture byte-for-byte (the fixture tar writer matches Go's
 `archive/tar` GNU-format output) and diffs its analysis against those goldens —
 no expected values are hardcoded, and no goldens are rewritten by tooling.
 
+**Pin, and why:** dive's committed goldens live only on dive's `main` branch —
+they arrived in dive#727 (the stereoscope port); tag **v0.13.1 has no
+`internal/imagefixture` tree at all**, so cloning it makes every fixture
+silently skip. This verifier therefore pins the exact upstream commit the
+goldens were last verified against, `e97febbeb6956b11f679f6d823762752185e3fef`
+(tip of dive `main` at the time of writing), rather than a moving branch head.
+When dive releases a tag containing the golden suite, pin that tag instead.
+(The docker-daemon comparison jobs use the released dive **v0.13.1** binary.)
+
 ```
-$ git clone --depth 1 https://github.com/wagoodman/dive /tmp/dive-src
+$ git init -q /tmp/dive-src
+$ git -C /tmp/dive-src remote add origin https://github.com/wagoodman/dive
+$ git -C /tmp/dive-src fetch -q --depth 1 origin e97febbeb6956b11f679f6d823762752185e3fef
+$ git -C /tmp/dive-src checkout -q FETCH_HEAD
 $ DIVE_REPO=/tmp/dive-src node tools/verify-fixtures.mjs
 ...
 17 passed, 0 failed, 0 skipped

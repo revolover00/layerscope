@@ -12,7 +12,7 @@ browser, and the analysis is dive-compatible to the byte.**
 - **User-controlled text renders via `textContent`** (or `el()` in `src/app.js`)
   — never `innerHTML`. File paths and creating commands come from untrusted
   tar archives.
-- **`npm test` must stay green** (currently 44/44) alongside the dive golden
+- **`npm test` must stay green** (see the CI badge) alongside the dive golden
   checks (`DIVE_REPO=/path/to/dive node tools/verify-fixtures.mjs` → 17/17) and
   `npm run smoke`.
 - New deps need a reason someone else can quote in the PR description. Prefer
