@@ -1,10 +1,18 @@
 name: Record demo
 
 # Records tools/record-demo.mjs against the built site in real Chromium,
-# converts the video to assets/demo.gif (palettegen + paletteuse, 10 fps,
-# 900px wide, ≤ 4 MB enforced) and uploads the GIF + an mp4 copy as
-# artifacts. Manual trigger only; the GIF is committed to the repo only by
-# a separate human-reviewed PR.
+# builds a deliberately wasteful image (build-essential + cleanup in a
+# *separate* layer) and records it — the recording doubles as the showcase
+# for layerscope's waste analysis. Converts the video to assets/demo.gif
+# (1100px — the full 1:1 recording width, 15 fps, palettegen + paletteuse,
+# dither=none, ≤ 6 MB enforced; ladder 1000px then 900px before any fps
+# reduction) and uploads the GIF plus an artifact-only H.264/yuv420p/30fps
+# mp4 (-crf 23 -preset veryfast faststart, ≤ 9 MB enforced). The recorder
+# saves per-step PNGs with DOM assertions; the job builds a 12-frame contact
+# sheet from the mp4 and uploads both as a second artifact. Manual trigger
+# only; the GIF is committed to the repo only by a separate human-reviewed PR.
+# Note: the GIF is 1100px wide on purpose — at 800px the downscale made the
+# 12px meta text unreadable.
 
 on:
   workflow_dispatch:
@@ -24,12 +32,20 @@ jobs:
       - name: Install dev dependencies
         run: npm ci
 
-      - name: Build the demo image tar (python:3.12-slim, same as the public-images job)
+      - name: Build the deliberately wasteful demo image
+        # Dockerfile: cleanup in a *separate* layer, so it can't shrink the image —
+        # the whole point of the example. build-essential stays; the apt lists are
+        # whiteout'ed in layer 2 but their bytes are already in layer 1.
         run: |
           set -euo pipefail
           mkdir -p /tmp/demo-recording
-          docker pull python:3.12-slim
-          docker save python:3.12-slim -o /tmp/demo-recording/python-3.12-slim.tar
+          cat > /tmp/demo-recording/Dockerfile <<'DOCKERFILE'
+          FROM python:3.12-slim
+          RUN apt-get update && apt-get install -y --no-install-recommends build-essential
+          RUN rm -rf /var/lib/apt/lists/* && apt-get clean
+          DOCKERFILE
+          docker build -t layerscope/demo-waste:latest -f /tmp/demo-recording/Dockerfile /tmp/demo-recording
+          docker save layerscope/demo-waste:latest -o /tmp/demo-recording/demo-waste.tar
           ls -la /tmp/demo-recording
 
       - name: Install Chromium (playwright-core)
@@ -44,38 +60,58 @@ jobs:
           sleep 1
           curl -fsS -o /dev/null http://127.0.0.1:8321/index.html
           node tools/record-demo.mjs --url http://127.0.0.1:8321 \
-            --image /tmp/demo-recording/python-3.12-slim.tar \
+            --image /tmp/demo-recording/demo-waste.tar \
             --out-dir /tmp/demo-recording
 
-      - name: Convert to a 10fps 900px palette GIF (and an artifact-only mp4)
+      - name: Convert to a 15fps 1100px palette GIF (and an artifact-only 30fps H.264 mp4)
         run: |
           set -euo pipefail
           command -v ffmpeg >/dev/null || { sudo apt-get update && sudo apt-get install -y ffmpeg; }
           VIDEO=$(ls -t /tmp/demo-recording/*.webm | head -1)
           echo "video: $VIDEO ($(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$VIDEO")s)"
+          # GIF: 15 fps, 1100px wide (the recording is exactly 1100px — keep it 1:1 so no text is
+          # re-rasterised smaller than it rendered; at 800px the 12px meta text was unreadable),
+          # palettegen + paletteuse, no dither noise; cap 6 MB
           ffmpeg -y -i "$VIDEO" \
-            -vf "fps=10,scale=900:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+            -vf "fps=15,scale=1100:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
             -loop 0 assets/demo.gif
-          ffmpeg -y -i "$VIDEO" -c:v libx264 -pix_fmt yuv420p -movflags faststart /tmp/demo-recording/demo.mp4
           SZ=$(stat -c%s assets/demo.gif)
           echo "demo.gif after primary pass: $SZ bytes"
-          if [ "$SZ" -gt 4000000 ]; then
+          if [ "$SZ" -gt 6000000 ]; then
             ffmpeg -y -i "$VIDEO" \
-              -vf "fps=10,scale=760:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+              -vf "fps=15,scale=1000:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
               -loop 0 assets/demo.gif
             SZ=$(stat -c%s assets/demo.gif)
-            echo "demo.gif after ladder-1 (10fps/760px): $SZ bytes"
+            echo "demo.gif after ladder-1 (15fps/1000px): $SZ bytes"
           fi
-          if [ "$SZ" -gt 4000000 ]; then
+          if [ "$SZ" -gt 6000000 ]; then
             ffmpeg -y -i "$VIDEO" \
-              -vf "fps=8,scale=680:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+              -vf "fps=15,scale=900:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
               -loop 0 assets/demo.gif
             SZ=$(stat -c%s assets/demo.gif)
-            echo "demo.gif after ladder-2 (8fps/680px): $SZ bytes"
+            echo "demo.gif after ladder-2 (15fps/900px): $SZ bytes"
           fi
-          [ "$(stat -c%s assets/demo.gif)" -le 4000000 ] || { echo '::error::demo.gif still exceeds 4 MB after both ladders'; exit 1; }
-          DUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 assets/demo.gif)
-          echo "::notice::demo.gif duration=${DUR}s size=$(stat -c%s assets/demo.gif)B"
+          [ "$(stat -c%s assets/demo.gif)" -le 6000000 ] || { echo '::error::demo.gif still exceeds 6 MB after both ladders'; exit 1; }
+          # mp4 (artifact only, never committed): H.264, yuv420p, 30 fps, crf 23, veryfast, faststart; cap 9 MB
+          MP4=/tmp/demo-recording/demo.mp4
+          ffmpeg -y -i "$VIDEO" -vf fps=30 -c:v libx264 -pix_fmt yuv420p -crf 23 -preset veryfast -movflags faststart "$MP4"
+          MS=$(stat -c%s "$MP4")
+          echo "demo.mp4: $MS bytes"
+          [ "$MS" -le 9000000 ] || { echo '::error::demo.mp4 exceeds 9 MB'; exit 1; }
+          GDUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 assets/demo.gif)
+          MDUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$MP4")
+          echo "::notice::demo.gif duration=${GDUR}s size=$(stat -c%s assets/demo.gif)B | demo.mp4 duration=${MDUR}s size=${MS}B"
+
+      - name: Record screens upload + build contact sheet
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/demo-screens
+          ls -la /tmp/demo-screens/steps
+          MP4=/tmp/demo-recording/demo.mp4
+          DUR=$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$MP4")
+          FPS=$(python3 -c "print(12 / float('$DUR'))")
+          ffmpeg -y -i "$MP4" -vf "fps=${FPS},scale=480:-1,tile=4x3" -frames:v 1 /tmp/demo-screens/contact-sheet.png
+          ls -la /tmp/demo-screens
 
       - name: Upload demo artifacts
         uses: actions/upload-artifact@v7
@@ -84,4 +120,13 @@ jobs:
           path: |
             assets/demo.gif
             /tmp/demo-recording/demo.mp4
+          retention-days: 7
+
+      - name: Upload per-step screenshots and contact sheet
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-screens
+          path: |
+            /tmp/demo-screens/steps/*.png
+            /tmp/demo-screens/contact-sheet.png
           retention-days: 7

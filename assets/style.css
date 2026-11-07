@@ -296,7 +296,8 @@ code {
   padding: 26px 28px; position: relative; overflow: hidden;
 }
 .summary-eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--dim-2); margin-bottom: 8px; }
-.image-name { font-family: var(--mono); font-size: 19px; font-weight: 600; word-break: break-all; letter-spacing: -0.01em; }
+.summary-id { min-width: 0; }
+.image-name { font-family: var(--mono); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .summary-chips { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .chip {
   font-family: var(--mono); font-size: 11px; color: var(--dim);
