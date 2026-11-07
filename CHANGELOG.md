@@ -17,6 +17,12 @@ All notable changes to layerscope are documented here. The format follows
   buttons; the browser fixture job now asserts the idle landing page
   (sample button visible/enabled; no visible "Reading archive" text) on
   desktop and on a 390x844 viewport
+- Landing copy, follow-up: footer privacy line now states layers are
+  read as a stream with only tar headers used for the analysis (zstd
+  fallback layers are also hashed locally to verify them); the
+  dive-comparison claim notes efficiency matches within 1e-9 rather than
+  "exactly"; the wasted-table caption drops the "same ordering as dive"
+  phrase (intra-tie order is undefined in dive v0.13.1)
 
 ## [0.1.1] — 2026-11-07
 
