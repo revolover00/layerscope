@@ -102,3 +102,36 @@ Browser timings will differ; the bundled sample is 92 KiB and analyzes in millis
 data per layer plus a 68-byte file duplicated across two layers. Content is
 random, so compression achieves almost nothing — these rows describe decode+parse
 cost on incompressible bytes, not on typical images.
+
+## Big legacy docker-save fixture (~3 GB) — added in PR #31
+
+A sparse ~3.15 GB legacy `docker save` tar (file bodies are holes; generated
+on the fly in the `Browser benchmark` workflow, never committed):
+3 layers × 1000 × 1 MiB zero files + one shared 1 MiB `shared/dup.bin` per layer
+(+3 occurrences) + a per-layer `app/config.yml`. The fixture
+(`tools/ci/build-big-legacy.mjs`) is built in ~4 s. In the browser fixture job
+(`tools/browser-big.mjs`, desktop 1440×900) the archive is uploaded through
+the real file input; layers / total / wasted / reclaimable / efficiency are
+asserted equal to an independent Node reference analysis on the same file
+(`tools/ci/analyze-big.mjs`, the same `src/core/analyze.js` code path, over an
+fs-backed lazy Blob).
+
+Content bytes (header-counted, dive semantics): **3,148,873,761 B total
+("2.93 GB")**; **wasted 3,145,761 B ("3.00 MB")** (`shared/dup.bin` ×3 =
+3,145,728 B + `app/config.yml` ×3 = 33 B); **reclaimable 2,097,174 B
+("2.00 MB")**; efficiency **0.99933**; wsPaths **2**; per-layer content
+1,049,624,587 B × 3 (checked against the analyzer's output — they match).
+`diff_ids` are sha256 over the written regions and are deterministic across
+generator rewrites.
+
+| where | wall time | memory |
+|---|---|---|
+| Node reference analysis, Linux, Node v22.22.3 (this table's environment) | **9.37 s** (`elapsedMs` 9,372) | RSS peak **≈ 1.08 GiB** (pass 1 buffers one ~1.05 GiB layer tar at a time before skipping it; JS heap stays ≈ 11 MB — external buffers dominate) |
+| GitHub Actions run [42408649792](https://github.com/revolover00/layerscope/actions/runs/42408649792) (ubuntu-latest, Chromium via playwright-core, desktop 1440×900) | step green; whole job **2 m 9 s** end to end (includes zstd fixture builds, docker pulls, bench, soak, limit and fixture steps) | peak `usedJSHeapSize` sampled in-page every 200 ms — **not retrievable**: the `::notice::` metrics live in the job log, and GitHub's log storage was unreachable (EOF) from the measurement environment; job success is the evidence the analysis finished with zero console/page errors and all numbers matched the Node reference |
+
+The ~3 GB of zero bodies are never decompressed — uncompressed legacy layers
+are parsed by skipping data sections (buffering one at a time) — so this
+fixture measures archive-scale scanning and analysis, **not** multi-GB decode
+throughput; the 150/160 MiB single-layer zstd rows above remain the
+decode-scale evidence. The file is sparse end to end, so container CI disk
+usage stays ~12 MB for the fixture itself.
