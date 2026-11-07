@@ -9,6 +9,14 @@ All notable changes to layerscope are documented here. The format follows
 ### Changed
 
 - README restructured; long material moved to docs/
+- Landing-page copy accuracy pass: the hero's multi-GB streaming claim
+  replaced with what is tested (memory scales with the largest layer;
+  tested up to 150 MiB per layer); footer "Honest limits" renamed to
+  "Limits"; the bundled-sample sentence repaired; "Try a sample image"
+  now uses the secondary `.btn-ghost` style like the other secondary
+  buttons; the browser fixture job now asserts the idle landing page
+  (sample button visible/enabled; no visible "Reading archive" text) on
+  desktop and on a 390x844 viewport
 
 ## [0.1.1] — 2026-11-07
 

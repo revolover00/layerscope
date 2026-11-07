@@ -78,13 +78,13 @@
 
     <div class="hero-alt">
       <span>Nothing to test with?</span>
-      <button id="sample-btn" class="btn btn-primary" type="button">Try a sample image</button>
-      <span class="hero-alt-note">bundled <code>layerscope/sample:latest</code> (92&nbsp;KiB) — a real <code>add → modify → delete</code> docker&nbsp;save archive</span>
+      <button id="sample-btn" class="btn btn-ghost" type="button">Try a sample image</button>
+      <span class="hero-alt-note">bundled <code>layerscope/sample:latest</code> (92&nbsp;KiB) — a real docker&nbsp;save archive with an <code>add → modify → delete</code> history</span>
     </div>
 
     <ul class="hero-facts">
       <li><span class="fact-idx">01</span><strong>Legacy + OCI</strong><span class="fact-body">manifest.json and index.json layouts, gzip layers via DecompressionStream</span></li>
-      <li><span class="fact-idx">02</span><strong>Memory-safe</strong><span class="fact-body">File.slice streaming — multi-GB archives without loading them into memory</span></li>
+      <li><span class="fact-idx">02</span><strong>Memory-safe</strong><span class="fact-body">Reads the archive in slices; memory scales with the largest layer (tested up to 150 MiB per layer)</span></li>
       <li><span class="fact-idx">03</span><strong>dive-compatible</strong><span class="fact-body">same size, waste and efficiency definitions — cross-checked in CI</span></li>
     </ul>
   </div>
@@ -260,7 +260,7 @@
       <p>Analyze Docker images without uploading them. File contents are streamed past and discarded — only tar headers are read.</p>
     </div>
     <div class="footer-col">
-      <p class="footer-title">Honest limits</p>
+      <p class="footer-title">Limits</p>
       <ul>
         <li>zstd layers — supported: natively where the browser provides it, otherwise via the bundled pure-JS decoder (one layer in memory). The oci-save-zstd fixture passes dive's golden.</li>
         <li>Whole-archive <code>.tar.gz</code> of a <code>docker save</code> output is not supported — save with uncompressed layers.</li>
