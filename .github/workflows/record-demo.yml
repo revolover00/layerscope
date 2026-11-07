@@ -4,15 +4,14 @@ name: Record demo
 # builds a deliberately wasteful image (build-essential + cleanup in a
 # *separate* layer) and records it — the recording doubles as the showcase
 # for layerscope's waste analysis. Converts the video to assets/demo.gif
-# (1100px — the full 1:1 recording width, 15 fps, palettegen + paletteuse,
-# dither=none, ≤ 6 MB enforced; ladder 1000px then 900px before any fps
-# reduction) and uploads the GIF plus an artifact-only H.264/yuv420p/30fps
+# (800px, 15 fps, palettegen + paletteuse, dither=none, ≤ 6 MB enforced;
+# ladder 720px, then fps drops to 12 before width — never below 15fps first) and uploads the GIF plus an artifact-only H.264/yuv420p/30fps
 # mp4 (-crf 23 -preset veryfast faststart, ≤ 9 MB enforced). The recorder
 # saves per-step PNGs with DOM assertions; the job builds a 12-frame contact
 # sheet from the mp4 and uploads both as a second artifact. Manual trigger
 # only; the GIF is committed to the repo only by a separate human-reviewed PR.
-# Note: the GIF is 1100px wide on purpose — at 800px the downscale made the
-# 12px meta text unreadable.
+# Note: the GIF is 800px wide; the 1100px experiment was requested back
+# for legibility and later reverted — the README img width must equal the real GIF width.
 
 on:
   workflow_dispatch:
@@ -63,33 +62,31 @@ jobs:
             --image /tmp/demo-recording/demo-waste.tar \
             --out-dir /tmp/demo-recording
 
-      - name: Convert to a 15fps 1100px palette GIF (and an artifact-only 30fps H.264 mp4)
+      - name: Convert to a 15fps 800px palette GIF (and an artifact-only 30fps H.264 mp4)
         run: |
           set -euo pipefail
           command -v ffmpeg >/dev/null || { sudo apt-get update && sudo apt-get install -y ffmpeg; }
           VIDEO=$(ls -t /tmp/demo-recording/*.webm | head -1)
           echo "video: $VIDEO ($(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$VIDEO")s)"
-          # GIF: 15 fps, 1100px wide (the recording is exactly 1100px — keep it 1:1 so no text is
-          # re-rasterised smaller than it rendered; at 800px the 12px meta text was unreadable),
-          # palettegen + paletteuse, no dither noise; cap 6 MB
+          # GIF: 15 fps, 800px wide, palettegen + paletteuse, no dither noise; cap 6 MB
           ffmpeg -y -i "$VIDEO" \
-            -vf "fps=15,scale=1100:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+            -vf "fps=15,scale=800:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
             -loop 0 assets/demo.gif
           SZ=$(stat -c%s assets/demo.gif)
           echo "demo.gif after primary pass: $SZ bytes"
           if [ "$SZ" -gt 6000000 ]; then
             ffmpeg -y -i "$VIDEO" \
-              -vf "fps=15,scale=1000:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+              -vf "fps=15,scale=720:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
               -loop 0 assets/demo.gif
             SZ=$(stat -c%s assets/demo.gif)
-            echo "demo.gif after ladder-1 (15fps/1000px): $SZ bytes"
+            echo "demo.gif after ladder-1 (15fps/720px): $SZ bytes"
           fi
           if [ "$SZ" -gt 6000000 ]; then
             ffmpeg -y -i "$VIDEO" \
-              -vf "fps=15,scale=900:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
+              -vf "fps=12,scale=720:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse=dither=none" \
               -loop 0 assets/demo.gif
             SZ=$(stat -c%s assets/demo.gif)
-            echo "demo.gif after ladder-2 (15fps/900px): $SZ bytes"
+            echo "demo.gif after ladder-2 (12fps/720px): $SZ bytes"
           fi
           [ "$(stat -c%s assets/demo.gif)" -le 6000000 ] || { echo '::error::demo.gif still exceeds 6 MB after both ladders'; exit 1; }
           # mp4 (artifact only, never committed): H.264, yuv420p, 30 fps, crf 23, veryfast, faststart; cap 9 MB
