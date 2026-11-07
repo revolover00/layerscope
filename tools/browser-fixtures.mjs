@@ -4,6 +4,10 @@
 // the numbers layerscope is expected to report, plus that three consecutive
 // uploads of the same fixture in the same page give identical results.
 //
+// Also asserts the idle landing page (desktop 1440x900 and mobile 390x844):
+// the #sample-btn button is visible and enabled on load, and no "Reading
+// archive" loading text is visible while the page is idle.
+//
 // Fixture content: base layer with 200 KiB random app/config.txt + small
 // files; layer 2 adds a 5 MiB random data/big.bin; layer 3 is the whiteout
 // data/.wh.big.bin; layer 4 rewrites app/config.txt with 200 KiB random;
@@ -44,6 +48,62 @@ const browser = await chromium.launch();
 let failures = 0;
 let anyConsoleErrors = false;
 const fail = (fixture, msg) => { failures++; console.error(`::error::browser-fixtures ${fixture}: ${msg}`); };
+
+// ---------- idle landing page: sample button + no loading text ----------
+// The "Try a sample image" button must be visible and enabled on load, and
+// the idle page must not show any "Reading archive" loading text — checked
+// on a desktop viewport and on a 390x844 mobile viewport.
+for (const [label, viewport] of [
+  ['desktop 1440x900', { width: 1440, height: 900 }],
+  ['mobile 390x844', { width: 390, height: 844 }],
+]) {
+  const page = await browser.newPage({ viewport });
+  const consoleErrors = [];
+  page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
+
+  await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+
+  const sampleBtn = page.locator('#sample-btn');
+  const btnVisible = await sampleBtn.isVisible();
+  const btnEnabled = await sampleBtn.isEnabled();
+  console.log(`::notice::browser-fixtures idle ${label}: #sample-btn visible=${btnVisible} enabled=${btnEnabled}`);
+  if (!btnVisible) fail('idle', `${label}: #sample-btn is not visible on load`);
+  if (!btnEnabled) fail('idle', `${label}: #sample-btn is not enabled on load`);
+
+  // Elements that directly hold a "Reading archive" text node, with a real
+  // rendered box — an ancestor with display:none empties the box, so the
+  // hidden #progress-overlay copy of the string does not count as visible.
+  const visibleLoading = await page.evaluate(() => {
+    const hits = new Set();
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!/reading archive/i.test(node.nodeValue || '')) continue;
+      const el = node.parentElement;
+      if (!el) continue;
+      const cs = window.getComputedStyle(el);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') continue;
+      if (parseFloat(cs.opacity || '1') === 0) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+      if (cs.position !== 'fixed' && !el.offsetParent) continue;
+      hits.add(`${el.tagName.toLowerCase()}#${el.id || ''}`);
+    }
+    return [...hits];
+  });
+  if (visibleLoading.length) {
+    fail('idle', `${label}: "Reading archive" loading text is visible while the page is idle (in: ${visibleLoading.join(', ')})`);
+  }
+  if (await page.locator('#progress-overlay').isVisible()) {
+    fail('idle', `${label}: #progress-overlay is visible on the idle page`);
+  }
+  if (consoleErrors.length) {
+    anyConsoleErrors = true;
+    fail('idle', `${label}: console/page errors: ${consoleErrors.join(' | ')}`);
+  }
+  await page.close();
+}
 
 for (const [name, img] of [['test1-waste.tar', test1], ['test3-zstd.tar', test3]]) {
   const page = await browser.newPage();
@@ -173,4 +233,4 @@ if (failures > 0 || anyConsoleErrors) {
   console.error(`browser-fixtures FAILED with ${failures} failure(s)`);
   process.exit(1);
 }
-console.log('::notice::browser-fixtures PASS — wasted-waste fixtures report identical numbers on all 3 uploads (longname header check ran when --longname was passed)');
+console.log('::notice::browser-fixtures PASS — idle landing checks (desktop + 390x844) green; wasted-waste fixtures report identical numbers on all 3 uploads (longname header check ran when --longname was passed)');
