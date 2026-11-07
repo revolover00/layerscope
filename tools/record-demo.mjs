@@ -1,17 +1,19 @@
 #!/usr/bin/env node
-// Records a short demo video of layerscope analyzing a real image end to end,
-// for the README GIF. Runs in CI (workflow record-demo.yml) against the
-// statically served site; nothing is uploaded anywhere — the file never
-// leaves the runner (or this machine).
+// Records a short demo video of layerscope analyzing a deliberately wasteful
+// image end to end, for the README GIF. Runs in CI (workflow record-demo.yml)
+// against the statically served site; nothing is uploaded anywhere.
 //
-// Video timeline (fps=10 for the GIF, target 20–25 s total): video ≈
-// 1 s landing hold + upload + analysis + ~1 s gauge settle + 4.5 s summary
-// hold (Total / Wasted / Reclaimable / efficiency) + 3 × 2.1 s layer-detail
-// clicks + 3.0 s Top 20 files tab + 4.0 s Wasted space tab. Phase markers are
-// printed so the conversion step (and human review) can reason about the timeline.
+// Video timeline (target 20–25 s, fps=10 for the GIF):
+//   1.5 s on the landing page → upload → analysis (progress overlay visible)
+//   + ~0.4 s gauge settle + 4.0 s summary hold (Total / Wasted / Reclaimable / efficiency)
+//   + 3 × (layer click + "Added" chip + smooth scroll + 2.1 s hold)
+//   + Top 20 files tab (scroll + 3.0 s) + Wasted space tab (scroll + 4.0 s)
+// Phase markers are printed so the conversion step (and human review) can
+// reason about the timeline. Panels that overflow the viewport are brought
+// fully into view with one smooth scrollIntoView; no scrolling elsewhere.
 //
 // Usage:
-//   node tools/record-demo.mjs --url http://127.0.0.1:8321 --image /tmp/python-3.12-slim.tar [--out-dir /tmp/layerscope-demo-rec]
+//   node tools/record-demo.mjs --url http://127.0.0.1:8321 --image /tmp/demo-recording/demo-waste.tar [--out-dir /tmp/layerscope-demo-rec]
 // Prints one DEMO_VIDEO <path> line with the recorded webm after the context closes.
 
 import { chromium } from 'playwright-core';
@@ -28,20 +30,30 @@ mkdirSync(outDir, { recursive: true });
 
 const t0 = Date.now();
 const mark = (label) => console.log(`DEMO_PHASE +${Date.now() - t0}ms ${label}`);
+const SCROLL_MS = 750;
+const scrollEnd = async (page, sel) => {
+  // one smooth scroll so the panel's bottom edge is fully visible; then the
+  // caller holds still, so the frames stay jitter-free
+  await page.evaluate((s) => {
+    const t = document.querySelector(s);
+    if (t) t.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, sel);
+  await page.waitForTimeout(SCROLL_MS);
+};
 
 const browser = await chromium.launch();
 try {
   const context = await browser.newContext({
-    viewport: { width: 1100, height: 700 },
+    viewport: { width: 1100, height: 800 },
     deviceScaleFactor: 1,
-    recordVideo: { dir: outDir, size: { width: 1100, height: 700 } },
+    recordVideo: { dir: outDir, size: { width: 1100, height: 800 } },
   });
   const page = await context.newPage();
   page.on('pageerror', (e) => console.error(`[pageerror] ${e.message}`));
 
   await page.goto(url, { waitUntil: 'load', timeout: 60000 });
   await page.waitForSelector('#dropzone', { state: 'visible', timeout: 10000 });
-  await page.waitForTimeout(1000); // let the hero settle before the upload starts
+  await page.waitForTimeout(1500); // breathe on the landing page before upload
   mark('page-open');
 
   await page.setInputFiles('#file-input', image);
@@ -61,24 +73,33 @@ try {
   }
   mark('analysis-done');
 
-  // let gauges/counters settle, then hold the summary for ~4.5 s
+  // let gauges/counters settle, then hold the summary for ~4.0 s
   await page.waitForTimeout(400);
-  await page.waitForTimeout(4500);
+  await page.waitForTimeout(4000);
   mark('summary-pause');
 
   const rows = page.locator('#layer-table tbody tr');
   const rowCount = await rows.count();
   for (let i = 0; i < Math.min(3, rowCount); i++) {
     await rows.nth(i).click();
+    // show real files in the diff list (first rows default to "MODIFIED /" whiteout rows)
+    await page.locator('#ld-kind button[data-kind="added"]').click();
+    await page.waitForTimeout(150);
+    // layer detail panel bottom (file list) fully in view before the hold
+    await scrollEnd(page, '#ld-file-list');
     await page.waitForTimeout(2100);
     mark(`layer-${i + 1}`);
   }
 
   await page.click('#tab-top');
+  await page.waitForTimeout(150);
+  await scrollEnd(page, '#panel-top .table-scroll');
   await page.waitForTimeout(3000);
   mark('tab-top');
 
   await page.click('#tab-wasted');
+  await page.waitForTimeout(150);
+  await scrollEnd(page, '#panel-wasted .table-scroll');
   await page.waitForTimeout(4000);
   mark('tab-wasted');
 
