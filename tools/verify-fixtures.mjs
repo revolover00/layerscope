@@ -8,12 +8,19 @@
 //
 // The two on-disk docker saves (real images committed to dive's repo) are
 // analyzed directly. No expected values are hardcoded here; the goldens are
-// read from the dive source tree (DIVE_REPO env var, default
-// /tmp/dive-src/dive-main).
+// NOTE on the dive pin: committed goldens exist only on dive's `main` branch
+// (added in dive#727, the stereoscope port). v0.13.1 and earlier tags have no
+// internal/imagefixture tree — cloning them makes every fixture skip silently.
+// The verifier therefore pins commit e97febbeb6956b11f679f6d823762752185e3fef
+// (tip of dive main at the time of writing). When dive releases a tag that
+// contains the golden suite, pin that tag instead. DIVE_REPO env var,
+// default /tmp/dive-src.
 //
 // Usage:
 //   DIVE_REPO=/path/to/dive node tools/verify-fixtures.mjs [--verbose]
-//   git clone --depth 1 https://github.com/wagoodman/dive /tmp/dive-src/dive-main
+//   git init -q /tmp/dive-src && git -C /tmp/dive-src remote add origin https://github.com/wagoodman/dive \
+//     && git -C /tmp/dive-src fetch -q --depth 1 origin e97febbeb6956b11f679f6d823762752185e3fef \
+//     && git -C /tmp/dive-src checkout -q FETCH_HEAD
 
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
