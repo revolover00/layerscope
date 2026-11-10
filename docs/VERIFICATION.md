@@ -6,7 +6,7 @@ Numbers below are real output from this repository, not aspirations.
 
 ```
 $ npm test          # node --test
-# tests 49   # pass 49   # fail 0
+# tests 89   # pass 89   # fail 0
 ```
 
 ## layerscope vs. dive's own golden files

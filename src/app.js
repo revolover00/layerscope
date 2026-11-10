@@ -2,6 +2,9 @@
 
 import { analyzeImage, formatPlatform } from './core/analyze.js';
 import { formatBytes, formatPercent, formatCount, formatPercentBig } from './core/format.js';
+import { buildSuggestions } from './core/insights.js';
+import { compareAnalyses } from './core/compare.js';
+import { buildExport, exportToJSON, exportToCSV, exportFilename } from './core/exporter.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -17,6 +20,7 @@ const state = {
   blob: null,       // kept so a multi-platform OCI index can be re-analyzed on demand
   label: '',
   platform: null,
+  compare: { a: null, b: null, running: false, queue: [] },  // per side: { analysis, label }
 };
 
 // ---------------- helpers ----------------
@@ -31,6 +35,7 @@ function el(tag, className, text) {
 function showView(name) {
   $('#landing').hidden = name !== 'landing';
   $('#analysis').hidden = name !== 'analysis';
+  $('#compare').hidden = name !== 'compare';
   window.scrollTo({ top: 0 });
 }
 
@@ -169,6 +174,66 @@ function renderAnalysis(a, label) {
   selectLayer(0);
   renderTopFiles();
   renderWasted();
+  renderSuggestions(a);
+}
+
+// ---------------- render: suggestions ----------------
+
+function suggestionLayersText(layers) {
+  return `Layer${layers.length === 1 ? '' : 's'} ${layers.map((i) => i + 1).join(', ')}`;
+}
+
+function renderSuggestions(a) {
+  const list = $('#suggestions-list');
+  if (!list) return;
+  const empty = $('#suggestions-empty');
+  const count = $('#suggestions-count');
+  const suggestions = buildSuggestions(a);
+  list.innerHTML = '';
+
+  if (count) count.textContent = suggestions.length === 0 ? '0 found' : `${suggestions.length} found`;
+  if (empty) empty.hidden = suggestions.length !== 0;
+
+  const frag = document.createDocumentFragment();
+  for (const s of suggestions) {
+    const card = el('article', 'suggestion');
+    card.dataset.suggestionId = s.id;
+
+    const head = el('div', 'suggestion-head');
+    const sev = el('span', `severity severity-${s.severity}`, s.severity);
+    sev.setAttribute('aria-label', `severity: ${s.severity}`);
+    const title = el('h4', 'suggestion-title', s.title);
+    const bytes = el('span', 'suggestion-bytes', `up to ${formatBytes(s.bytesReclaimable)} reclaimable`);
+    head.append(sev, title, bytes);
+
+    const detail = el('p', 'suggestion-detail', s.detail);
+
+    const meta = el('div', 'suggestion-meta');
+    meta.appendChild(el('span', 'suggestion-layers', suggestionLayersText(s.layers)));
+    if (s.paths && s.paths.length) {
+      const ul = el('ul', 'suggestion-paths');
+      ul.setAttribute('aria-label', 'Affected paths');
+      for (const p of s.paths) {
+        const li = el('li');
+        const code = el('code', '', p);
+        li.appendChild(code);
+        ul.appendChild(li);
+      }
+      meta.appendChild(ul);
+      if (s.morePaths > 0) {
+        meta.appendChild(el('span', 'suggestion-more', `+${s.morePaths} more path${s.morePaths === 1 ? '' : 's'}`));
+      }
+    }
+
+    const fix = el('p', 'suggestion-fix');
+    const fixLabel = el('strong', '', 'Fix. ');
+    fix.appendChild(fixLabel);
+    fix.appendChild(document.createTextNode(s.fix));
+
+    card.append(head, detail, meta, fix);
+    frag.appendChild(card);
+  }
+  list.appendChild(frag);
 }
 
 // ---------------- render: layers ----------------
@@ -371,9 +436,223 @@ function renderWasted() {
   tbody.appendChild(frag);
 }
 
+// ---------------- export ----------------
+
+function activeExportFilters() {
+  return {
+    selectedLayer: state.selectedLayer,
+    fileKind: state.fileKind,
+    pathFilter: state.fileFilter,
+    wastedPathFilter: state.wastedFilter,
+    topScope: state.topScope,
+    rowLimit: state.rowLimit,
+  };
+}
+
+function downloadText(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoke on the next tick — revoking synchronously can cancel the download in some builds.
+  window.setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function exportAnalysis(kind) {
+  const a = state.analysis;
+  if (!a) return;
+  const doc = buildExport(a, { label: state.label, filters: activeExportFilters() });
+  if (kind === 'csv') {
+    downloadText(exportFilename(doc, 'csv'), exportToCSV(doc), 'text/csv;charset=utf-8');
+  } else {
+    downloadText(exportFilename(doc, 'json'), exportToJSON(doc), 'application/json');
+  }
+}
+
+// ---------------- compare view ----------------
+
+function compareError(message) {
+  let box = $('#compare-error');
+  box.innerHTML = '';
+  if (!message) { box.hidden = true; return; }
+  box.appendChild(el('strong', '', 'Could not analyze that archive. '));
+  box.appendChild(document.createTextNode(message));
+  box.hidden = false;
+}
+
+// Uploads are enqueued instead of dropped: picking both files in quick
+// succession must analyze both, not silently ignore the second.
+function enqueueCompare(side, file) {
+  state.compare.queue.push({ side, file });
+  if (!state.compare.running) void runCompareQueue();
+}
+
+async function runCompareQueue() {
+  state.compare.running = true;
+  try {
+    while (state.compare.queue.length) {
+      const { side, file } = state.compare.queue.shift();
+      await analyzeCompareSide(side, file);
+    }
+  } finally {
+    state.compare.running = false;
+  }
+}
+
+async function analyzeCompareSide(side, file) {
+  compareError(null);
+  const overlay = $('#progress-overlay');
+  overlay.hidden = false;
+  setProgress(0.02, `Reading ${side === 'a' ? 'A' : 'B'} archive index…`, file.name || '');
+  try {
+    const analysis = await analyzeImage(file, {
+      topLimit: 20,
+      onProgress: (p) => {
+        if (p.phase === 'scan') setProgress(0.06, p.detail || 'Reading archive index…', file.name);
+        else if (p.phase === 'layer') {
+          const frac = 0.1 + 0.82 * ((p.index + (p.done ? 1 : 0)) / Math.max(1, p.total));
+          setProgress(frac, p.detail || `Layer ${p.index + 1}/${p.total}`, file.name);
+        } else if (p.phase === 'finalize') setProgress(0.95, 'Computing efficiency…', file.name);
+      },
+    });
+    state.compare[side] = { analysis, label: file.name || '' };
+    const status = $(`#compare-status-${side}`);
+    status.textContent = `${file.name || 'image'} — ${analysis.layerCount} layer${analysis.layerCount === 1 ? '' : 's'} · ${formatBytes(analysis.totalSizeBytes)}`;
+    status.classList.add('is-loaded');
+    status.classList.remove('is-error');
+    status.title = file.name || '';
+    setProgress(1, 'Done', file.name);
+    overlay.hidden = true;
+    maybeRenderCompare();
+  } catch (err) {
+    console.error('compare side failed', err);
+    state.compare[side] = null;
+    const status = $(`#compare-status-${side}`);
+    status.textContent = file.name ? `${file.name} — failed to analyze` : 'Failed to analyze';
+    status.classList.add('is-error');
+    status.classList.remove('is-loaded');
+    overlay.hidden = true;
+    compareError(err && err.message ? err.message : String(err));
+    $(`#compare-results`).hidden = true;
+  }
+}
+
+function signedBytes(delta) {
+  if (delta === 0) return '0 B';
+  return `${delta > 0 ? '+' : '−'}${formatBytes(Math.abs(delta))}`;
+}
+
+function signedPts(deltaRatio) {
+  const pts = Math.abs(deltaRatio * 100);
+  if (deltaRatio === 0) return '±0.0 pts';
+  return `${deltaRatio > 0 ? '+' : '−'}${pts.toFixed(1)} pts`;
+}
+
+function signedCount(delta) {
+  if (delta === 0) return '±0';
+  return `${delta > 0 ? '+' : '−'}${Math.abs(delta)}`;
+}
+
+function setDeltaClass(node, goodWhenNegative, delta) {
+  node.classList.remove('delta-good', 'delta-bad', 'delta-neutral');
+  if (delta === 0) { node.classList.add('delta-neutral'); return; }
+  const good = goodWhenNegative ? delta < 0 : delta > 0;
+  node.classList.add(good ? 'delta-good' : 'delta-bad');
+}
+
+function maybeRenderCompare() {
+  const { a, b } = state.compare;
+  if (a && b) renderCompare(a.analysis, b.analysis, a.label, b.label);
+}
+
+function renderCompare(aAnal, bAnal, aLabel, bLabel) {
+  const cmp = compareAnalyses(aAnal, bAnal);
+  $('#compare-results-title').textContent = `${aLabel || 'A'} → ${bLabel || 'B'}`;
+
+  const total = $('#cd-total');
+  total.textContent = signedBytes(cmp.delta.totalSizeBytes);
+  setDeltaClass(total, true, cmp.delta.totalSizeBytes);
+  $('#cd-total-sub').textContent = `${formatBytes(cmp.before.totalSizeBytes)} → ${formatBytes(cmp.after.totalSizeBytes)}`;
+
+  const wasted = $('#cd-wasted');
+  wasted.textContent = signedBytes(cmp.delta.wastedBytes);
+  setDeltaClass(wasted, true, cmp.delta.wastedBytes);
+  $('#cd-wasted-sub').textContent = `${formatBytes(cmp.before.wastedBytes)} → ${formatBytes(cmp.after.wastedBytes)}`;
+
+  const reclaim = $('#cd-reclaimable');
+  reclaim.textContent = signedBytes(cmp.delta.reclaimableBytes);
+  setDeltaClass(reclaim, true, cmp.delta.reclaimableBytes);
+  $('#cd-reclaimable-sub').textContent = `${formatBytes(cmp.before.reclaimableBytes)} → ${formatBytes(cmp.after.reclaimableBytes)}`;
+
+  const eff = $('#cd-efficiency');
+  eff.textContent = signedPts(cmp.delta.efficiency);
+  setDeltaClass(eff, false, cmp.delta.efficiency);
+  $('#cd-efficiency-sub').textContent = `${formatPercent(cmp.before.efficiency, 1)} → ${formatPercent(cmp.after.efficiency, 1)}`;
+
+  const layers = $('#cd-layers');
+  layers.textContent = signedCount(cmp.delta.layerCount);
+  layers.classList.remove('delta-good', 'delta-bad');
+  layers.classList.add('delta-neutral');
+  $('#cd-layers-sub').textContent = `${cmp.before.layerCount} → ${cmp.after.layerCount} layer${cmp.after.layerCount === 1 ? '' : 's'}`;
+
+  const tbody = $('#compare-tbody');
+  tbody.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  for (const row of cmp.changedPaths) {
+    const tr = document.createElement('tr');
+    const tdPath = el('td', 'path', row.path);
+    tdPath.title = row.path;
+    const tdA = el('td', 'num');
+    const tdB = el('td', 'num');
+    for (const [td, size] of [[tdA, row.beforeSize], [tdB, row.afterSize]]) {
+      if (size === 0) { td.textContent = '—'; td.classList.add('compare-path-absent'); td.title = 'absent in that image'; }
+      else td.textContent = formatBytes(size);
+    }
+    const tdDelta = el('td', 'num', row.delta === 0 ? '0 B' : `${row.delta > 0 ? '+' : '−'}${formatBytes(Math.abs(row.delta))}`);
+    tdDelta.classList.add('delta-neutral');
+    tr.append(tdPath, tdA, tdB, tdDelta);
+    frag.appendChild(tr);
+  }
+  tbody.appendChild(frag);
+
+  $('#compare-empty').hidden = cmp.changedPathCount !== 0;
+  const parts = [`${formatCount(cmp.changedPathCount)} path${cmp.changedPathCount === 1 ? '' : 's'} changed (${formatCount(cmp.addedPathCount)} added, ${formatCount(cmp.removedPathCount)} removed)`];
+  parts.push('final manifests only — the biggest winners are the whiteouted bytes in the size deltas above');
+  $('#compare-counts').textContent = parts.join(' · ');
+  $('#compare-results').hidden = false;
+  const title = $('#compare-results-title');
+  if (title && typeof title.focus === 'function') title.focus({ preventScroll: true });
+}
+
+function swapCompareSides() {
+  const { a, b } = state.compare;
+  state.compare.a = b;
+  state.compare.b = a;
+  const statusA = $('#compare-status-a');
+  const statusB = $('#compare-status-b');
+  const tmpText = statusA.textContent;
+  statusA.textContent = statusB.textContent;
+  statusB.textContent = tmpText;
+  const tmpTitle = statusA.title || '';
+  statusA.title = statusB.title || '';
+  statusB.title = tmpTitle;
+  const tmpClass = statusA.className;
+  statusA.className = statusB.className;
+  statusB.className = tmpClass;
+  maybeRenderCompare();
+}
+
+function openCompare() {
+  showView('compare');
+}
+
 // ---------------- tabs ----------------
 
-const tabs = ['tab-layers', 'tab-top', 'tab-wasted'];
+const tabs = ['tab-layers', 'tab-top', 'tab-wasted', 'tab-suggestions'];
 
 function activateTab(tabId) {
   for (const id of tabs) {
@@ -466,6 +745,38 @@ $('#sample-btn').addEventListener('click', async () => {
 });
 
 $('#analyze-another').addEventListener('click', () => showView('landing'));
+
+$('#export-json').addEventListener('click', () => exportAnalysis('json'));
+$('#export-csv').addEventListener('click', () => exportAnalysis('csv'));
+
+// --- compare mode ---
+$('#compare-btn').addEventListener('click', openCompare);
+$('#compare-back').addEventListener('click', () => showView('landing'));
+$('#compare-swap').addEventListener('click', swapCompareSides);
+
+for (const side of ['a', 'b']) {
+  const drop = $(`#compare-drop-${side}`);
+  const input = $(`#compare-file-${side}`);
+  const browse = $(`#compare-browse-${side}`);
+  browse.addEventListener('click', (e) => { e.stopPropagation(); input.click(); });
+  input.addEventListener('change', () => {
+    const file = input.files[0];
+    if (file) enqueueCompare(side, file);
+    input.value = '';
+  });
+  drop.addEventListener('click', () => input.click());
+  drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); } });
+  for (const evt of ['dragenter', 'dragover']) {
+    drop.addEventListener(evt, (e) => { e.preventDefault(); drop.classList.add('is-dragover'); });
+  }
+  for (const evt of ['dragleave', 'drop']) {
+    drop.addEventListener(evt, (e) => { e.preventDefault(); drop.classList.remove('is-dragover'); });
+  }
+  drop.addEventListener('drop', (e) => {
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) enqueueCompare(side, file);
+  });
+}
 
 for (const id of tabs) document.getElementById(id).addEventListener('click', () => activateTab(id));
 
