@@ -132,9 +132,11 @@ could not see:
 - **Creating commands are copyable in the browser** — a Copy button in the
   layer detail panel writes the exact command to the clipboard (with a
   non-`navigator.clipboard` fallback for older WebViews).
-- **A gzip- or zstd-wrapped outer archive is rejected with a targeted
+- **A gzip- or zstd-wrapped outer archive was rejected with a targeted
   message** (`docker save … | gzip` produces one) instead of the generic
-  "no manifest.json" error, which reads like the archive is corrupt.
+  "no manifest.json" error. Wrapper archives are now **supported** —
+  stream-decompressed into the tar parser with numbers identical to the
+  unwrapped archive (asserted in node unit tests and in real Chromium).
 
 Other fixes from the same passes: deleted-file rows now show the actual
 lower-layer size ("file · 1.50 MB hidden below"), modified directories render

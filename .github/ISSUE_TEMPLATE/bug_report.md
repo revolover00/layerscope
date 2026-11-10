@@ -21,6 +21,6 @@ about: Something analyzes wrong, refuses, or breaks in the UI
 
 **Integrity note**
 If the failure involves the fallback zstd decoder, include the exact error text
-(it names layer index, digests, and the 160 MiB limit). If `rootfs.diff_ids`
+(it names layer index, digests, and the fallback limit — 8 GiB by default, or `WINDOW_TOO_BIG` for frames with an explicit window descriptor over 32 MiB). If `rootfs.diff_ids`
 mismatch is reported, keep the archive — that is a data-integrity issue worth
 investigating, not "just tell me it is fine".

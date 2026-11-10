@@ -46,17 +46,30 @@ Root-cause work, honestly reported:
      structurally impossible. The browser additionally decodes in a
      per-analysis Web Worker terminated after the analysis (UI stays
      responsive on 100+ MiB layers; the state is destroyed with the worker).
-  2. **Byte-cap enforced mid-decode.** `decodeZstdCapped()` streams every
-     frame through an `ondata` handler and throws the instant the running
-     total crosses `maxLayerBytes` — frames without a content size (streamed
-     compression) cannot allocate past the cap, full stop. Zstd blocks are
-     ≤ 128 KiB, so overshoot is at most one block.
-  3. **Integrity verification (unchanged).** Every fallback-decoded layer is
-     sha256-compared against the config's `rootfs.diff_ids`; mismatch fails
-     the analysis with the layer index and both digests. gzip / plain-tar /
-     native-zstd layers are streamed and cannot be hashed without buffering —
-     they are unverified.
-  4. **Soak, both environments** — `tools/soak-zstd.mjs` (node), and
+  2. **Byte-cap enforced mid-decode, streaming end to end.** Every fallback
+     frame flows through `createZstdDecompressor()` — an `ondata` handler
+     throws the instant the running total crosses `maxLayerBytes` — and the
+     decoded blocks feed straight into the tar parser over a
+     `ReadableStream`; a layer is never materialized in memory. Frames without
+     a content size (streamed compression) cannot allocate past the cap, full
+     stop. Zstd blocks are ≤ 128 KiB, so overshoot is at most one block.
+     Additionally, a frame whose **explicit window descriptor** exceeds
+     32 MiB is refused with `WINDOW_TOO_BIG` before allocating (single-segment
+     frames are exempt — window == content size); the check reads the frame
+     header only.
+  3. **Streaming worker protocol with bounded in-flight bytes.** In the
+     browser the page feeds the worker compressed blocks (exact-size,
+     zero-copy transfers) with at most 32 MiB acknowledged-in-flight
+     (ack-driven flow control), and decoded blocks cross back the other way
+     as exact-size copies — never views into fzstd's window, so a sentinel
+     byte can never leak into the layer (the original one-shot transfer bug).
+  4. **Integrity verification (unchanged).** Every fallback-decoded layer is
+     sha256-compared against the config's `rootfs.diff_ids` (incremental
+     pure-JS SHA-256, cross-verified against WebCrypto and the NIST
+     vectors); mismatch fails the analysis with the layer index and both
+     digests. gzip / plain-tar / native-zstd layers are streamed and not
+     hashed — they are unverified.
+  5. **Soak, both environments** — `tools/soak-zstd.mjs` (node), and
      `tools/browser-soak.mjs` in one Chromium tab: the same frame decompressed
      2,000 times with every output sha256-verified; 50 analyses of one archive
      produce a single unique fingerprint. A 12-layer zstd archive analyzed
@@ -70,10 +83,12 @@ Root-cause work, honestly reported:
      the fallback is rarely reached at all where native zstd streams exist.)
 
 Limitation noted honestly: fzstd only supports back-reference distances up to
-2^25 bytes (32 MiB) — "ultra" zstd levels (>19) on >32 MiB outputs may fail;
-such frames are rare in registry images and error out cleanly rather than
-silently corrupting. The integrity check would catch any undetected case
-regardless.
+2^25 bytes (32 MiB) — a frame whose explicit window descriptor exceeds 32 MiB
+is refused with `WINDOW_TOO_BIG` before allocating (single-segment frames are
+exempt; the check applies to a blob's first frame, and later frames are
+bounded by the byte budget and the decoder's internal ~2 GB hard cap). Such
+frames are rare in registry images and error out cleanly rather than silently
+corrupting. The integrity check would catch any undetected case regardless.
 
 # Repository layout
 
@@ -102,7 +117,7 @@ tools/browser-bench.mjs real-browser cold/warm analysis times (Chromium, used by
 tools/bench-memory.mjs  rss + arrayBuffers memory bench for the zstd fallback path
 tools/soak-zstd.mjs     2000x same-frame decompress soak + 50-analysis fingerprint soak (node)
 tools/browser-soak.mjs  same soak in one Chromium tab (Playwright)
-tools/browser-limit.mjs 600 MiB-claim archive vs the browser fallback limit (Playwright)
+tools/browser-limit.mjs crafted 17 GiB-FCS archive vs the 8 GiB browser fallback ceiling (Playwright)
 tools/check-real-images.sh  pull public images, compare vs dive CLI (used by ci.yml real-images job)
 tests/                  node --test unit tests
 LICENSE                 MIT

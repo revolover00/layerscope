@@ -24,7 +24,8 @@ Please include, where possible:
 
 ## Scope notes
 
-- The 160 MiB fallback-decode limit and the `rootfs.diff_ids` integrity check
+- The 8 GiB fallback-decode limit (`maxLayerBytes`), the 32 MiB
+  window-descriptor policy (`WINDOW_TOO_BIG`) and the `rootfs.diff_ids` integrity check
   are documented **design constraints**, not vulnerabilities — but the repair
   path or the error UX can still be improved; feature requests go in a normal
   issue.

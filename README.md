@@ -60,8 +60,8 @@ Efficiency is compared with a relative tolerance of 1e-9; everything else must m
 
 ## Limitations
 
-- Expects an uncompressed `docker save` tar. `.tar.gz` / `.tar.zst` wrappers are detected and rejected with a clear message.
-- The zstd fallback decoder (used where the browser has no native zstd) refuses a single layer larger than 160 MiB and may fail on "ultra" levels with very large windows; gzip layers stream and are not affected.
+- Whole-archive `.tar.gz` / `.tar.zst` wrappers **are** supported (`docker save x | gzip` works): the wrapper is stream-decompressed into the tar parser. Member access re-scans the wrapper from the top per layer (O(layers × archive)) — prefer plain `docker save` for multi-GB images.
+- The zstd fallback decoder (used where the browser has no native zstd) streams end to end and refuses a single layer only above an 8 GiB uncompressed budget (configurable via `maxLayerBytes`); frames with an explicit window descriptor larger than 32 MiB are refused with `WINDOW_TOO_BIG`. gzip layers stream and are not affected.
 - Analyses one image at a time (multi-image `manifest.json`: first entry only). OCI multi-arch indexes use a platform picker over what is inside the archive; no registry or Docker daemon access.
 - Tested in Chromium only. Safari and Firefox are untested.
 - Deleting a file in a later layer still counts as waste, by design. No rename detection.

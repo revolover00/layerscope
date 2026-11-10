@@ -6,8 +6,44 @@ All notable changes to layerscope are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed
+### Added
+- Streaming zstd fallback: decoded fzstd blocks flow straight into the tar
+  parser over a `ReadableStream` (node inline; per-analysis Web Worker in the
+  browser) — a decompressed layer is never held in memory. The byte cap
+  (`maxLayerBytes`, default **8 GiB** uncompressed) is enforced mid-decode;
+  frames with an explicit window descriptor larger than 32 MiB are refused
+  with `WINDOW_TOO_BIG` before allocating (single-segment frames exempt).
+- Incremental pure-JS SHA-256 (`src/core/sha256.js`, FIPS 180-4) with
+  WebCrypto/NIST cross-verification; fallback layers hash per block and are
+  still verified against `rootfs.diff_ids`.
+- Whole-archive `.tar.gz` / `.tar.zst` wrappers (`docker save x | gzip`) are
+  stream-decompressed into the tar parser instead of rejected; member access
+  re-scans the wrapper (O(layers × archive)). Numbers identical to the
+  unwrapped archive (node unit test + real-Chromium assertion).
+- `tools/browser-wrapper.mjs` (plain-vs-wrapped .tar.gz analysis
+  self-consistency in Chromium), `tools/ci/build-crafted-fcs.mjs` (17 GiB-FCS
+  refusal fixture), `--metrics-out` for `tools/browser-big.mjs`, and a
+  `browser-metrics` artifact in the fixture job.
+- Unit/live tests: sha256 vectors and boundary splits, window-descriptor
+  refusal, 1/2/3-byte frame splits, tar-header-split parsing,
+  streaming worker protocol round-trip against the real worker module
+  (tests/worker-protocol-live.test.mjs).
 
+### Changed
+- The fallback-decode limit is now 8 GiB (default) and enforced streaming,
+  replacing the 160 MiB hard cap; the FCS pre-check is unchanged, the
+  mid-decode cap path is byte-exact. The two 600 MiB huge-claims browser
+  fixtures were replaced by the crafted 17 GiB-FCS fixture (the 600 MiB
+  variants are legal under the new ceiling).
+- CI fixture job additionally asserts: a **300 MiB single incompressible zstd
+  layer** analyzed in Chromium with numbers identical to a node reference
+  (`tools/ci/analyze-big.mjs`), the `.tar.gz` wrapper self-consistency check,
+  and the crafted-FCS refusal banner (8192 MiB ceiling).
+- The browser zstd worker protocol is now id-scoped streaming
+  (start/feed/data/done/error + feed ack with a 32 MiB in-flight cap).
+- Cold-path wall-clock on the fallback path roughly doubled at the same
+  sizes (incremental pure-JS SHA-256 at ~150–160 MiB/s); gzip and native-zstd
+  paths are unaffected.
 - README restructured; long material moved to docs/
 - Landing-page copy accuracy pass: the hero's multi-GB streaming claim
   replaced with what is tested (memory scales with the largest layer;

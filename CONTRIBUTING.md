@@ -34,8 +34,8 @@ browser, and the analysis is dive-compatible to the byte.**
 
 - Registry/network resolution, daemon access, or any upload of image data.
 - Rendering unsanitized markup from an archive.
-- Weakening the integrity guarantees (`rootfs.diff_ids` checks, the 160 MiB
-  fallback cap) without a documented, discussed reason.
+- Weakening the integrity guarantees (`rootfs.diff_ids` checks, the 8 GiB
+  fallback cap / `WINDOW_TOO_BIG` window policy) without a documented, discussed reason.
 - Style-only diffs mixed into functional changes.
 
 ## License
