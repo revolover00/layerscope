@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// Refusal-path test: upload a tiny archive whose zstd layer DECLARES a
-// decompressed size above the 160 MiB fallback limit (600 MiB of zeros
-// compresses to ~19 KB). The app must show the clear limit error and must
-// NOT crash or hang the tab.
+// Refusal-path test: upload a tiny crafted archive whose zstd layer DECLARES a
+// decompressed size of 17 GiB (tools/ci/build-crafted-fcs.mjs — 8-byte FCS,
+// valid 2 MiB window descriptor). The app must refuse on the header alone —
+// the banner names the 8 GiB default fallback limit — and must NOT crash or
+// hang the tab. (Mid-decode refusal for frames WITHOUT a content size is
+// covered by tests/no-fcs.test.mjs with a caller-supplied maxLayerBytes.)
 //
-// Usage: node tools/browser-limit.mjs --url http://127.0.0.1:8321 --image /tmp/bench/huge-claims.tar
+// Usage: node tools/browser-limit.mjs --url http://127.0.0.1:8321 --image /tmp/bench/crafted-fcs-huge.tar
 // Exits non-zero unless the error banner appears with the fallback-limit message.
 
 import { chromium } from 'playwright-core';
@@ -39,9 +41,9 @@ const outcome = await Promise.race([
 
 const bannerText = (await page.$('#error-box')) ? (await page.$eval('#error-box', (el) => el.textContent.trim())) : null;
 console.log(JSON.stringify({ outcome, pageErrors, bannerText }));
-console.log(`::notice::browser-limit outcome=${outcome} pageErrors=${pageErrors.length} bannerHasLimitMessage=${bannerText ? /fallback limit/.test(bannerText) : false}`);
+console.log(`::notice::browser-limit outcome=${outcome} pageErrors=${pageErrors.length} bannerHasLimitMessage=${bannerText ? /fallback limit/.test(bannerText) : false} names8GiBCeiling=${bannerText ? /8192 MiB|8 GiB/.test(bannerText) : false}`);
 
 await browser.close();
-const pass = outcome === 'error' && bannerText !== null && /fallback limit/.test(bannerText) && /refus/i.test(bannerText) && pageErrors.length === 0;
+const pass = outcome === 'error' && bannerText !== null && /fallback limit/.test(bannerText) && /refus/i.test(bannerText) && /8192 MiB|8 GiB/.test(bannerText) && pageErrors.length === 0;
 if (!pass) { console.error('BROWSER LIMIT TEST FAILED'); process.exit(1); }
 console.log('BROWSER LIMIT TEST PASSED');

@@ -1,17 +1,20 @@
-// Regression pin for the browser zstd worker ↔ page protocol.
+// Regression pin for the browser zstd worker ↔ page protocol (streaming).
 //
-// The one-shot decode tier (fzstd `decompress`) may return a VIEW onto a
-// larger internal buffer — fzstd's window subarray starts at byteOffset 12
-// (behind its sentinel header). The worker transfers the underlying
-// ArrayBuffer, so the placement MUST travel with it: flattening with
-// `out.buffer` alone silently prepends 12 sentinel bytes to the layer and the
-// tar parser fails at offset 0 in the browser (CI: "tar: bad header checksum
-// at offset 0"), while node-side tests that called decodeZstdCapped()
-// directly all passed. This test pins:
-//   1. the one-shot tier CAN return a non-zero-offset view (test premise),
-//   2. the page/worker re-assembly (byteOffset/byteLength) round-trips
-//      byte-exact, and
-//   3. the naive (buggy) re-assembly is caught by the same check.
+// History: the one-shot decode tier (fzstd `decompress`) may return a VIEW
+// onto a larger internal buffer — fzstd's window subarray starts at
+// byteOffset 12 (behind its sentinel header). The original worker transferred
+// the underlying ArrayBuffer without the placement, so 12 sentinel bytes got
+// prepended to the layer and the tar parser failed at offset 0 in the
+// browser. The streaming protocol eliminates the whole phantom-offset class:
+// EVERY block crossing the worker boundary — compressed chunks in, decoded
+// blocks out — is an exact-size fresh copy, and every message is id-scoped.
+//
+// This test pins:
+//   1. the worker emits exact-size ArrayBuffers (never views with offsets),
+//   2. the page re-assembly contract (byteOffset 0, byteLength) round-trips,
+//   3. the one-shot tier CAN still return a non-zero-offset view (the bug
+//      this design exists to prevent — decodeZstdCapped is kept for tooling),
+//   4. the wire sources carry the fresh-copy transfer + id protocol.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -20,6 +23,7 @@ import { createHash } from 'node:crypto';
 import zlib from 'node:zlib';
 
 import { decodeZstdCapped } from '../src/core/zstd-decode.js';
+import { createZstdDecompressor } from '../src/core/zstd-decode.js';
 
 const content = Buffer.concat([
   Buffer.alloc(900000, 0),
@@ -31,7 +35,7 @@ const content = Buffer.concat([
 const frame = zlib.zstdCompressSync(content, { params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 } });
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 
-test('one-shot tier returns a view the worker must re-place byte-exact', () => {
+test('one-shot tier returns a view whose placement must not leak into the stream', () => {
   const out = decodeZstdCapped(new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength), {
     maxBytes: content.length,
   });
@@ -39,29 +43,42 @@ test('one-shot tier returns a view the worker must re-place byte-exact', () => {
   assert.equal(sha(out), sha(content)); // the view itself is always correct
 });
 
-test('worker protocol round-trip: bytes travel as (buffer, byteOffset, byteLength)', () => {
-  const out = decodeZstdCapped(new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength), {
+test('streaming core emits only exact-size fresh buffers whose bytes round-trip', () => {
+  const blocks = [];
+  const d = createZstdDecompressor({
     maxBytes: content.length,
+    onChunk: (blk) => {
+      // the worker slices each block into an exact-size fresh copy before postMessage
+      const copy = blk.slice();
+      blocks.push(Buffer.from(copy.buffer, copy.byteOffset, copy.byteLength));
+      // simulated exact-size transfer must NOT share storage or offset into anything
+      assert.equal(copy.byteOffset, 0);
+      assert.equal(copy.byteLength, blk.byteLength);
+    },
   });
-  // exactly what zstd.worker.js posts and zstd.js's onmessage consumes
-  const posted = { bytes: out.buffer, byteOffset: out.byteOffset, byteLength: out.byteLength };
-  const received = new Uint8Array(posted.bytes, posted.byteOffset || 0, posted.byteLength ?? posted.bytes.byteLength);
-  assert.equal(received.byteLength, content.length);
-  assert.equal(sha(received), sha(content));
+  // feed in an awkward fixed chunk size to exercise block-boundary handling,
+  // then an explicit final push
+  for (let off = 0; off < frame.length; off += 997) {
+    d.push(frame.subarray(off, Math.min(off + 997, frame.length)), false);
+  }
+  d.push(new Uint8Array(0), true);
+  const reassembled = Buffer.concat(blocks);
+  assert.equal(reassembled.length, content.length);
+  assert.equal(sha(reassembled), sha(content));
 });
 
-test('naive flatten (out.buffer only) is detected — this was the CI failure', () => {
-  const out = decodeZstdCapped(new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength), {
-    maxBytes: content.length,
-  });
-  const flat = new Uint8Array(out.buffer); // the old, broken re-assembly
-  assert.notEqual(sha(flat), sha(content)); // sentinel-prefixed: tar would fail at offset 0
-});
-
-test('worker and page source carry the placement (protocol pin)', () => {
+test('worker and page sources implement the id-scoped fresh-copy protocol (protocol pin)', () => {
   const worker = readFileSync(new URL('../src/core/zstd.worker.js', import.meta.url), 'utf8');
   const main = readFileSync(new URL('../src/core/zstd.js', import.meta.url), 'utf8');
-  assert.match(worker, /byteOffset: out\.byteOffset/);
-  assert.match(worker, /byteLength: out\.byteLength/);
-  assert.match(main, /new Uint8Array\(bytes, byteOffset \|\| 0, byteLength \?\? bytes\.byteLength\)/);
+  // worker: fresh exact-size copy per decoded block, transferred with byteOffset 0
+  assert.match(worker, /const copy = blk\.slice\(\)/);
+  assert.match(worker, /byteOffset: 0/);
+  assert.match(worker, /type: 'data'/);
+  assert.match(worker, /type: 'done'/);
+  assert.match(worker, /type: 'error'/);
+  // page: compressed chunks are exact-size copies, transferred zero-copy; sessions are id-scoped
+  assert.match(main, /const copy = value\.slice\(\)/);
+  assert.match(main, /sessions\.set\(id, session\)/);
+  assert.match(main, /type: 'feed'/);
+  assert.match(main, /decompressStream/);
 });

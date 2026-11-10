@@ -67,6 +67,9 @@ sampled inside `onProgress`):
 | 1 layer × 150 MiB (157.3 MB)         | 1      | **795.4 MB**           | +600.0 MB             | 300.0 MB (+150.0 MB)¹   | 891 ms |
 | 6 layers × 10 MiB bench64             | 6      | **225.9 MB**           | +120.5 MB             | 60.0 MB (**+0.01 MB**)   | 330 ms |
 | 1 layer × 159 MiB (166.7 MB, tar just under the 160 MiB limit) | 1 | **683.3 MB** | n/r (see note) | 318.0 MB (+159.0 MB)¹   | 801 ms |
+| 1 layer × 150 MiB (streaming fallback, after) | 1 | **282.3 MB** | +86.8 MB | 150.0 MB (+0.0 MB after GC)² | 1215 ms |
+| 6 layers × 10 MiB (streaming fallback, after) | 6 | **171.8 MB** | +32.8 MB | 62.0 MB (+0.0 MB)² | 539 ms |
+| 1 layer × 300 MiB (streaming fallback, after — was refused at 160 MiB) | 1 | **437.7 MB** | +92.2 MB | 300.0 MB (+0.0 MB after GC)² | 2381 ms |
 
 (The 159 MiB row was re-measured with the two-tier decode, which keeps
 single-segment FCS frames on a single allocation: peak 853.4 → 683.3 MB,
@@ -77,7 +80,16 @@ SINGLE-layer workspaces (external-buffer accounting lags a cycle); a second
 `gc()` reclaims it completely (verified: after two passes a 1×159 MiB archive
 returns to 159.0 MB — zero growth across repeated analyses; this is V8 GC
 pacing, not a leak). Multi-layer workspaces retain nothing in a single pass.
-Peak scales with the **largest single layer**, not with total size or layer
+² Measured on the same machine, same tool, node v22.22.3, with the streaming
+fallback (this release): peak RSS during `analyzeImage()` is now bounded by
+the archive load (the fs-read whole-file buffer) plus decoder window/blocks —
+the +86.8 / +32.8 / +92.2 MB deltas during analysis cover exactly that.
+**The one-shot 160 MiB ceiling is gone** (8 GiB default; `maxLayerBytes`).
+Cost on the fallback path: wall-clock roughly doubles at these sizes (the
+incremental pure-JS SHA-256 runs at ~150–160 MiB/s versus one-shot native
+WebCrypto) — gzip and native-zstd paths are unaffected. Bench: node RSS only;
+Chromium `usedJSHeapSize` is sampled by the browser fixture job (artifact
+`browser-metrics`) — see the note below. Peak scales with the **largest single layer**, not with total size or layer
 count (120 MiB payload: **661.5 MB** as one layer vs **315.9 MB** as 12×10 MiB;
 the WASM path measured 787.7 / 308.0 MB on the same fixtures).
 
@@ -129,9 +141,41 @@ generator rewrites.
 | Node reference analysis, Linux, Node v22.22.3 (this table's environment) | **9.37 s** (`elapsedMs` 9,372) | RSS peak **≈ 1.08 GiB** (pass 1 buffers one ~1.05 GiB layer tar at a time before skipping it; JS heap stays ≈ 11 MB — external buffers dominate) |
 | GitHub Actions run [42408649792](https://github.com/revolover00/layerscope/actions/runs/42408649792) (ubuntu-latest, Chromium via playwright-core, desktop 1440×900) | step green; whole job **2 m 9 s** end to end (includes zstd fixture builds, docker pulls, bench, soak, limit and fixture steps) | peak `usedJSHeapSize` sampled in-page every 200 ms — **not retrievable**: the `::notice::` metrics live in the job log, and GitHub's log storage was unreachable (EOF) from the measurement environment; job success is the evidence the analysis finished with zero console/page errors and all numbers matched the Node reference |
 
+## 300 MiB single zstd layer + `.tar.gz` wrapper (this release)
+
+The fallback decoder now streams end to end; the old 160 MiB hard limit is
+gone (8 GiB default uncompressed per layer, `maxLayerBytes`). CI (run
+[42804365204](https://github.com/revolover00/layerscope/actions/runs/42804365204),
+job **browser-bench**, all steps green, ≈ 2 m 28 s):
+
+- **300 MiB incompressible single zstd layer**: analyzed in real Chromium and
+  asserted **display-identical to an independent Node reference analysis**
+  (`tools/ci/analyze-big.mjs` → `tools/browser-big.mjs`), desktop 1440×900,
+  uploaded through the real file input — layers, total bytes, wasted,
+  reclaimable, efficiency, wsPaths all match; zero console/page errors.
+- **`.tar.gz` wrapper of test1-waste** (legacy docker save, gzipped): the
+  in-browser analysis rendered **byte-identical numbers to the unwrapped
+  fixture** (`tools/browser-wrapper.mjs`) — layer count, total/wasted/
+  reclaimable, efficiency, wsPaths — zero console/page errors.
+- **Crafted 17 GiB-FCS refusal** (tiny archive whose zstd layer declares a
+  17 GiB decompressed size with an 8-byte content-size field): the analysis
+  is refused **before decoding** in Chromium; the banner names the
+  8192 MiB / 8 GiB default ceiling (`tools/browser-limit.mjs`).
+- Node memory/time for the same fixtures is in the table above
+  (before/after rows).
+- Chromium `usedJSHeapSize` peak: **NOT retrievable** — the fixture job now
+  uploads a `browser-metrics` artifact (`upload-artifact@v4`) with the sampled
+  peak, but the measurement environment cannot download it (the artifact
+  storage endpoint returns EOF from the measurement environment, same class of
+  failure as the log host). The Chromium heap numbers remain unverified;
+  node RSS numbers above are measured locally and reproducible with
+  `tools/bench-memory.mjs`.
+
 The ~3 GB of zero bodies are never decompressed — uncompressed legacy layers
 are parsed by skipping data sections (buffering one at a time) — so this
 fixture measures archive-scale scanning and analysis, **not** multi-GB decode
-throughput; the 150/160 MiB single-layer zstd rows above remain the
-decode-scale evidence. The file is sparse end to end, so container CI disk
+throughput; the streaming-fallback rows above remain the
+decode-scale evidence (a 300 MiB single incompressible layer analyzed end to
+end on node and in Chromium in CI, and asserted equal to the node reference
+there — see the next section). The file is sparse end to end, so container CI disk
 usage stays ~12 MB for the fixture itself.

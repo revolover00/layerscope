@@ -92,6 +92,9 @@ test('no-FCS over-limit: refusal happens DURING decode with a clear error', asyn
 });
 
 test('huge-claims no-FCS: a tiny archive declaring nothing, decoding to 600 MiB of zeros, is cut off mid-decode', async () => {
+  // Under the default 8 GiB ceiling this decodes fine — the cut-off is exercised
+  // here with a smaller caller-supplied ceiling instead (analyzeImage accepts
+  // maxLayerBytes), which is also how the browser-limit path is configured.
   const zeros = Buffer.alloc(600 * 1024 * 1024, 0);
   const buf = await synthesizeRawAsync({
     format: 'oci-save',
@@ -103,10 +106,58 @@ test('huge-claims no-FCS: a tiny archive declaring nothing, decoding to 600 MiB 
   });
   assert.ok(buf.length < 1024 * 1024, `archive must be tiny, got ${buf.length}`);
   await assert.rejects(
-    () => analyzeImage(new MemBlob(buf)),
+    () => analyzeImage(new MemBlob(buf), { maxLayerBytes: 100 * 1024 * 1024 }),
     (err) => {
       assert.match(err.message, /during decode/);
-      assert.match(err.message, /160 MiB/);
+      assert.match(err.message, /fallback limit/);
+      assert.match(err.message, /100 MiB/);
+      return true;
+    },
+  );
+});
+
+test('huge-claims no-FCS: a frame with a 17 GiB declared content size is refused before decoding under the default ceiling', async () => {
+  // The pre-decode refusal path (FCS present, over the default 8 GiB budget):
+  // declared = 17 GiB >= Number.MAX_SAFE_INTEGER guard? No — 17 GiB fits easily.
+  // The archive itself is tiny; the refusal happens on the header alone.
+  // Hand-build a frame header claiming 17 GiB (explicit window descriptor
+  // frame, fcsFlag 3 = 8-byte FCS) with a REAL 1 MiB frame's block bytes as
+  // the body — the refusal must fire on the header, before any decode.
+  const payload = Buffer.alloc(1024 * 1024, 65);
+  const donor = zlib.zstdCompressSync(payload, {
+    params: { [zlib.constants.ZSTD_c_compressionLevel]: 3 },
+  });
+  const donorFhd = donor[4];
+  const donorFcsFlag = (donorFhd >> 6) & 3;
+  const donorSingleSegment = (donorFhd >> 5) & 1;
+  let donorHeaderLen = 5;
+  if (!donorSingleSegment) donorHeaderLen += 1;
+  donorHeaderLen += [0, 1, 2, 4][donorFhd & 0x3];
+  if (donorFcsFlag === 0) donorHeaderLen += donorSingleSegment ? 1 : 0;
+  else if (donorFcsFlag === 1) donorHeaderLen += 2;
+  else if (donorFcsFlag === 2) donorHeaderLen += 4;
+  else donorHeaderLen += 8;
+  const blocks = donor.subarray(donorHeaderLen);
+  const frame = Buffer.concat([
+    Buffer.from([0x28, 0xb5, 0x2f, 0xfd]), // magic
+    Buffer.from([0xc0]),                   // FHD: fcsFlag 3 (8-byte FCS), no single-segment, no dict id
+    Buffer.from([0x58]),                   // window descriptor: 2 MiB window (valid)
+    (() => { const b = Buffer.alloc(8); b.writeBigUInt64LE(17n * 1024n * 1024n * 1024n); return b; })(),
+    blocks,
+  ]);
+  const buf = await synthesizeRawAsync({
+    format: 'oci-save',
+    compression: 'zstd',
+    rawLayerBlobs: [frame],
+    layers: [[{ name: 'data/zeros.bin', content: Buffer.alloc(1024, 65), mode: 0o644 }]],
+    history: [{ created_by: 'RUN dd if=/dev/zero of=/data/zeros.bin bs=1G count=17' }],
+    repoTag: 'layerscope/huge-claims:latest',
+  });
+  await assert.rejects(
+    () => analyzeImage(new MemBlob(buf)),
+    (err) => {
+      assert.match(err.message, /exceeding the 8192 MiB/);
+      assert.match(err.message, /before allocating memory/);
       return true;
     },
   );

@@ -5,27 +5,71 @@
 // and is terminated when the analysis ends (analyzeImage's finally). fzstd
 // carries no shared linear memory — every decode builds a fresh internal
 // state object — so cross-analysis decoder degradation is structurally
-// impossible. The worker still isolates the decode from the page: blocking
+// impossible. The worker isolates the decode from the page: blocking
 // multi-hundred-MB decodes never freeze the UI, and a decoder bug cannot
 // corrupt the app's own heap.
+//
+// Streaming protocol (id-scoped, one analysis at a time per worker):
+//   page -> worker  { type: 'start',  id, maxBytes }
+//   page -> worker  { type: 'feed',   id, chunk: ArrayBuffer, final: boolean }
+//                   (each chunk is an exact-size copy; ownership is transferred)
+//   page -> worker  { type: 'cancel', id }  — abandon the session mid-stream
+//   worker -> page  { type: 'data',   id, bytes: ArrayBuffer, byteOffset: 0, byteLength }
+//                   (always an exact-size fresh copy — never a view into fzstd's
+//                    window, so no 12-byte sentinel can leak into the layer)
+//   worker -> page  { type: 'done',   id }
+//   worker -> page  { type: 'error',  id, error: string, code: string|undefined }
 
-import { decodeZstdCapped } from './zstd-decode.js';
+import { createZstdDecompressor } from './zstd-decode.js';
+
+const sessions = new Map(); // id -> { feed(chunk, final), cancel() }
 
 self.onmessage = (e) => {
-  const { id, buffer, offset, length, maxBytes } = e.data || {};
+  const msg = e.data || {};
+  const { type, id } = msg;
   try {
-    const frame = new Uint8Array(buffer, offset || 0, length ?? buffer.byteLength);
-    const out = decodeZstdCapped(frame, { maxBytes: maxBytes ?? Number.MAX_SAFE_INTEGER });
-    // NOTE: the one-shot decode tier may return a VIEW onto a larger internal
-    // buffer (fzstd subarrays its window at offset 12). Transfer the whole
-    // buffer but carry the view's placement — flattening with `out.buffer`
-    // alone prepends fzstd's 12 sentinel bytes to the layer (corrupting the
-    // tar at offset 0) and the caller would see trailing garbage too.
-    self.postMessage(
-      { id, ok: true, bytes: out.buffer, byteOffset: out.byteOffset, byteLength: out.byteLength },
-      [out.buffer],
-    );
+    if (type === 'start') {
+      if (sessions.has(id)) throw new Error(`zstd worker: duplicate session id ${id}`);
+      let decoder = null;
+      sessions.set(id, {
+        feed(chunk, final) {
+          if (!decoder) {
+            decoder = createZstdDecompressor({
+              maxBytes: msg.maxBytes ?? Number.MAX_SAFE_INTEGER,
+              onChunk: (blk) => {
+                // exact-size fresh copy, transferred — no views, no sentinel bytes
+                const copy = blk.slice();
+                self.postMessage({ type: 'data', id, bytes: copy.buffer, byteOffset: 0, byteLength: copy.byteLength }, [copy.buffer]);
+              },
+            });
+          }
+          decoder.push(new Uint8Array(chunk), !!final);
+          if (final) {
+            sessions.delete(id);
+            self.postMessage({ type: 'done', id });
+          }
+        },
+        cancel() {
+          sessions.delete(id);
+        },
+        // (no ack needed for 'start'/'cancel'; feeds ack inline above)
+      });
+      return;
+    }
+    const session = sessions.get(id);
+    if (type === 'feed') {
+      if (!session) return; // late chunk after error — drop silently
+      session.feed(msg.chunk, msg.final);
+      // ack consumption so the page can bound its in-flight compressed bytes
+      self.postMessage({ type: 'ack', id, ackBytes: msg.chunk ? msg.chunk.byteLength || 0 : 0 });
+      return;
+    }
+    if (type === 'cancel') {
+      if (session) session.cancel();
+      return;
+    }
   } catch (err) {
-    self.postMessage({ id, ok: false, error: String((err && err.message) || err), code: err && err.code });
+    sessions.delete(id);
+    self.postMessage({ type: 'error', id, error: String((err && err.message) || err), code: err && err.code });
   }
 };

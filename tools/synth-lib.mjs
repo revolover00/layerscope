@@ -178,6 +178,9 @@ function compressLayersSync(spec, layerTars) {
 }
 
 async function compressLayersAsync(spec, layerTars) {
+  // spec.rawLayerBlobs: pre-built layer blobs injected verbatim (fixtures for
+  // frames a compressor won't emit, e.g. a crafted 17 GiB content-size claim).
+  if (spec.rawLayerBlobs) return spec.rawLayerBlobs;
   if (spec.compression !== 'zstd') return compressLayersSync(spec, layerTars);
   if (spec.format === 'legacy') return layerTars; // legacy: uncompressed layers
   // node's native zstd (node >= 22.15) — required for zstd synthesis.

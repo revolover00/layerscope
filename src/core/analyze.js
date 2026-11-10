@@ -11,13 +11,17 @@
 //
 // File *contents* are only read when a layer is compressed — reading the
 // file list requires full local decompression (gzip via tar iteration, zstd
-// via the worker decoder). Uncompressed tar layers are parsed by skipping
-// header blocks; their contents are never read. zstd layers are also
-// sha256-hashed locally against the image config's rootfs.diff_ids.
-// Everything decodes in this process; nothing is uploaded.
+// via the streaming worker decoder). Uncompressed tar layers are parsed by
+// skipping header blocks; their contents are never read. zstd layers decoded
+// through the pure-JS fallback (browsers without native zstd) are also
+// sha256-hashed incrementally against the image config's rootfs.diff_ids —
+// gzip / plain-tar / native-zstd layers remain unhashed. Everything decodes
+// in this process; nothing is uploaded.
 
-import { iterTarEntries, readBlobSlice, blobReadableStream } from './tar.js';
-import { nativeZstdStream, decompressZstd, createZstd, zstdFrameContentSize } from './zstd.js';
+import { iterTarEntries, readBlobSlice, blobReadableStream, openTarEntryDataStream } from './tar.js';
+import { nativeZstdStream, createZstd, zstdFrameContentSize } from './zstd.js';
+import { enforceZstdWindowLimit, decompressReadable, LayerLimitError } from './zstd-decode.js';
+import { createSha256 } from './sha256.js';
 import {
   FileTree,
   treeAddEntry,
@@ -44,78 +48,81 @@ class TopK {
 }
 
 const SMALL_FILE_MAX = 4 * 1024 * 1024; // collect tiny metadata files in pass 1
-// Hard upper bound for a single decompressed zstd layer on the fallback
-// decode path (browsers without native DecompressionStream('zstd')). The
-// fallback materializes the layer in memory (iterTarEntries needs the
-// bytes), so an unbounded layer is an allocation-crash / tab-OOM risk.
-// gzip layers are unaffected — they stream end-to-end. analyzeImage() callers
-// may tune this with the `maxLayerBytes` option. Enforcement:
+// Hard upper bound for the DECOMPRESSED size of a single zstd layer on the
+// fallback decode path (browsers without native DecompressionStream('zstd')).
+// The fallback now streams end to end — decoded blocks flow straight into
+// the tar parser, so an unbounded layer is bounded here only by this budget,
+// not by available memory. analyzeImage() callers may tune this with the
+// `maxLayerBytes` option. Enforcement:
 //   1. frames WITH a content size are refused BEFORE decoding;
 //   2. every decode — with or without a content size — streams through a
-//      byte-capped decoder that throws mid-flight past maxLayerBytes.
-// Tested up to the limit on
-// node (159 MiB content layer passes, rss ~1021 MB peak; a 160 MiB-content
-// layer whose tar lands 2 KB over the limit is refused BEFORE allocating) and
-// in real Chromium (150 MiB incompressible single layer, see browser-bench).
+//      byte-capped decoder that throws mid-flight past maxLayerBytes;
+//   3. frames with an explicit window descriptor larger than 32 MiB are
+//      refused before decoding (WINDOW_TOO_BIG) — see zstd-decode.js.
+// gzip layers are unaffected — they stream end-to-end. Tested up to the
+// limit on node (300 MiB single incompressible layer passes, see
+// docs/BENCHMARKS.md) and in real Chromium (browser-bench fixture job).
 // Refusal produces a clear error, never a silent crash.
-const DEFAULT_MAX_LAYER_BYTES = 160 * 1024 * 1024; // 160 MiB
+const DEFAULT_MAX_LAYER_BYTES = 8 * 1024 * 1024 * 1024; // 8 GiB
 const COLLECT_PATHS = new Set(['manifest.json', 'index.json', 'oci-layout', 'repositories']);
 const ROOT_CONFIG_RE = /^[0-9a-f]{64}\.json$/;
 
-async function sniffCompression(blob, offset) {
-  const head = new Uint8Array(await blob.slice(offset, offset + 4).arrayBuffer());
+function compressionFromHead(head) {
+  if (!head || head.length < 2) return 'none';
   if (head[0] === 0x1f && head[1] === 0x8b) return 'gzip';
   if (head.length >= 4 && head[0] === 0x28 && head[1] === 0xb5 && head[2] === 0x2f && head[3] === 0xfd) return 'zstd';
   return 'none';
 }
 
-async function sha256Hex(bytes) {
-  const buf = await globalThis.crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+// Passthrough that feeds every chunk through `hasher` (incremental sha256).
+function hashingStream(readable, hasher) {
+  const reader = readable.getReader();
+  return new ReadableStream({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) { controller.close(); return; }
+      hasher.update(value);
+      controller.enqueue(value);
+    },
+    async cancel(reason) {
+      try { await reader.cancel(reason); } catch { /* best effort */ }
+    },
+  });
 }
 
-async function layerStream(blob, offset, size, compression, maxLayerBytes, zstdSessionHolder, layerHashes, layerIndex) {
-  if (compression === 'none') {
-    return blobReadableStream(blob, offset, offset + size);
-  }
-  if (compression === 'gzip') {
-    return blobReadableStream(blob, offset, offset + size).pipeThrough(new DecompressionStream('gzip'));
-  }
-  // zstd: prefer the browser's native streaming decoder; otherwise fall back to
-  // the pure-JS fzstd streaming decoder (bytes bounded mid-decode by maxLayerBytes;
-  // gzip stays fully streaming).
+// Layer bytes -> a stream of DECOMPRESSED tar bytes for the layer pipeline.
+// `compressed` is a ReadableStream positioned at the layer's first byte;
+// `head` carries the first (up to) 32 bytes of the layer (already fetched for
+// sniffing — reused here for the window / content-size pre-checks, so no
+// second read or decode is needed).
+//
+// Every path streams end to end: nothing here buffers the layer. Only the
+// fzstd fallback path hashes the decompressed bytes (rootfs.diff_ids
+// integrity) — gzip / plain-tar / native-zstd remain unhashed, as before.
+async function layerStreamFrom({ compressed, head, compression, maxLayerBytes, sessionHolder, hashSink, layerIndex }) {
+  if (compression === 'none') return compressed;
+  if (compression === 'gzip') return compressed.pipeThrough(new DecompressionStream('gzip'));
+  // zstd
   if (nativeZstdStream()) {
-    return blobReadableStream(blob, offset, offset + size).pipeThrough(new DecompressionStream('zstd'));
+    return compressed.pipeThrough(new DecompressionStream('zstd'));
   }
-  const raw = new Uint8Array(await readBlobSlice(blob, offset, offset + size));
-  // Enforce the limit BEFORE allocating: if the zstd frame header carries a
-  // content size, refuse upfront without decoding. Otherwise (or in addition)
-  // the decode streams through a byte-capped decoder that throws mid-flight
-  // past maxLayerBytes — see src/core/zstd-decode.js.
-  const declared = zstdFrameContentSize(raw);
+  // ---- pure-JS fzstd streaming fallback ----
+  // 1) window policy on the frame head BEFORE any allocation: a frame whose
+  //    window descriptor exceeds 32 MiB is refused with a specific error.
+  enforceZstdWindowLimit(head);
+  // 2) content-size policy: refuse upfront when the frame header declares a
+  //    decompressed size over the budget (before any allocation). Frames
+  //    without a content size are capped mid-flight by createZstdDecompressor.
+  const declared = zstdFrameContentSize(head);
   if (declared != null && declared > maxLayerBytes) {
-    throw new Error(
-      `zstd layer declares a decompressed size of ${(declared / 1048576).toFixed(1)} MiB (${declared} bytes), exceeding the ${(maxLayerBytes / 1048576).toFixed(0)} MiB (${maxLayerBytes} bytes) fallback limit — refusing to decode before allocating memory. ` +
-      `The in-browser decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
-      `analyzeImage() callers can tune the limit via the maxLayerBytes option.`,
-    );
+    throw new LayerLimitError(maxLayerBytes, 'before', declared);
   }
-  // one decoder session per analysis; released in analyzeImage's finally
-  if (!zstdSessionHolder.session) zstdSessionHolder.session = await createZstd();
-  const out = await decompressZstd(raw, { module: zstdSessionHolder.session, maxBytes: maxLayerBytes });
-  if (out.byteLength > maxLayerBytes) {
-    throw new Error(
-      `zstd layer decompressed to ${(out.byteLength / 1048576).toFixed(1)} MiB (${out.byteLength} bytes), exceeding the ${(maxLayerBytes / 1048576).toFixed(0)} MiB (${maxLayerBytes} bytes) fallback limit. ` +
-      `The in-browser decoder must hold one layer in memory. Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
-      `analyzeImage() callers can tune the limit via the maxLayerBytes option.`,
-    );
-  }
-  // integrity: hash of the decompressed layer is checked against the config's
-  // rootfs.diff_ids after the layer loop (only possible here — out is in memory)
-  if (layerHashes) layerHashes[layerIndex] = await sha256Hex(out);
-  return new ReadableStream({
-    start(controller) { controller.enqueue(out); controller.close(); },
-  });
+  // 3) stream through the byte-capped decoder; hash as bytes flow past.
+  const hasher = createSha256();
+  if (hashSink) hashSink[layerIndex] = hasher;
+  if (!sessionHolder.session) sessionHolder.session = await createZstd();
+  const decoded = await sessionHolder.session.decompressStream(compressed, { maxBytes: maxLayerBytes });
+  return hashingStream(decoded, hasher);
 }
 
 /** Human label for a manifest: accepts an index descriptor ({platform:{...}}) or a flat {os, architecture, variant} entry. */
@@ -150,27 +157,63 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
   const warnings = [];
   const progress = (phase, detail) => onProgress({ phase, ...(detail || {}) });
 
-  // ---------------- pass 0: reject gzip/zstd-wrapped outer archives with a targeted message ----------------
-  // `docker save` emits an uncompressed .tar. Wrapping it in .tar.gz / .tar.zst makes the
-  // random-access reads impossible, so fail fast and say exactly what is wrong instead of
-  // the generic 'no manifest' error, which reads like the archive is corrupt.
+  // ---------------- pass 0: detect a gzip/zstd-wrapped outer archive ----------------
+  // `docker save` emits an uncompressed .tar, but people pipe it through gzip/zstd
+  // (`docker save x | gzip > x.tar.gz`). Random access into the tar is impossible on a
+  // compressed stream, so the whole outer archive is decompressed on the fly: pass 1
+  // walks one streaming decompression, and pass 2 re-decompresses from the top for each
+  // layer (O(outer + layers) — the wrapper is decoded once per layer; see HOW-IT-WORKS).
+  // Layer bytes are drained with bounded memory — nothing is buffered whole.
+  let outerCompression = 'none';
+  let outerHead = null;
   if (blob.size >= 4) {
-    const head = new Uint8Array(await readBlobSlice(blob, 0, 4));
-    if (head[0] === 0x1f && head[1] === 0x8b) {
-      throw new Error('This archive is gzip-compressed (.tar.gz). Unpack it first (gzip -d), or re-run `docker save` without piping through gzip — docker save already emits an uncompressed .tar.');
-    }
-    if (head[0] === 0x28 && head[1] === 0xb5 && head[2] === 0x2f && head[3] === 0xfd) {
-      throw new Error('This archive is zstd-compressed (.tar.zst). Unpack it first (zstd -d), or re-run `docker save` without outer compression.');
-    }
+    outerHead = new Uint8Array(await readBlobSlice(blob, 0, Math.min(32, blob.size)));
+    outerCompression = compressionFromHead(outerHead);
   }
+  // outer zstd wrapper: same window policy as layers, checked before any allocation
+  if (outerCompression === 'zstd') enforceZstdWindowLimit(outerHead);
+
+  const outerFreshStream = () => {
+    const raw = blobReadableStream(blob, 0, blob.size);
+    if (outerCompression === 'gzip') return raw.pipeThrough(new DecompressionStream('gzip'));
+    if (outerCompression === 'zstd') {
+      if (nativeZstdStream()) return raw.pipeThrough(new DecompressionStream('zstd'));
+      // outer wrapper has no size budget of its own (it is the whole image) —
+      // decoding is still window-bounded by the decoder; nothing else accumulates
+      return decompressReadable(raw, { maxBytes: Number.MAX_SAFE_INTEGER });
+    }
+    return raw;
+  };
+  // Compressed (or plain) outer bytes for one layer / member, plus its first bytes for sniffing.
+  const outerLayerSource = async (meta) => {
+    if (outerCompression === 'none') {
+      const head = new Uint8Array(await blob.slice(meta.dataOffset, Math.min(meta.dataOffset + 32, meta.dataOffset + meta.size)).arrayBuffer());
+      return { stream: blobReadableStream(blob, meta.dataOffset, meta.dataOffset + meta.size), head };
+    }
+    return openTarEntryDataStream(outerFreshStream(), meta.dataOffset, meta.size);
+  };
+  const outerReadSlice = async (start, end) => {
+    if (outerCompression === 'none') return readBlobSlice(blob, start, end);
+    const { stream } = await openTarEntryDataStream(outerFreshStream(), start, end - start);
+    const reader = stream.getReader();
+    const out = new Uint8Array(end - start);
+    let off = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out.set(value, off);
+      off += value.byteLength;
+    }
+    return out;
+  };
+  const outerNote = outerCompression === 'none' ? '' : ` (while decompressing the outer .tar.${outerCompression === 'gzip' ? 'gz' : 'zst'} wrapper)`;
 
   // ---------------- pass 1: index the outer tar ----------------
   progress('scan', { detail: 'reading archive index' });
   const index = new Map(); // path -> { dataOffset, size }
   const collected = new Map(); // path -> Uint8Array (small metadata only)
-  const scanStream = blobReadableStream(blob, 0, blob.size);
   try {
-    for await (const { header, data, dataOffset } of iterTarEntries(scanStream, {
+    for await (const { header, data, dataOffset } of iterTarEntries(outerFreshStream(), {
       collectData: (h) =>
         h.size <= SMALL_FILE_MAX && (COLLECT_PATHS.has(h.path.slice(1)) || ROOT_CONFIG_RE.test(h.path.slice(1))),
     })) {
@@ -179,7 +222,9 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
       if (data) collected.set(rel, data);
     }
   } catch (err) {
-    throw new Error(`Failed to read the tar archive: ${err.message}`);
+    throw new Error(outerCompression === 'none'
+      ? `Failed to read the tar archive: ${err.message}`
+      : `Failed to decompress the outer ${outerCompression === 'gzip' ? 'gzip (.tar.gz)' : 'zstd (.tar.zst)'} wrapper or the tar inside it: ${err.message}`);
   }
 
   const readJson = (rel) => {
@@ -192,7 +237,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     if (collected.has(rel)) return readJson(rel);
     const meta = index.get(rel);
     if (!meta) throw new Error(`missing ${rel} in archive`);
-    const buf = await readBlobSlice(blob, meta.dataOffset, meta.dataOffset + meta.size);
+    const buf = await outerReadSlice(meta.dataOffset, meta.dataOffset + meta.size);
     return JSON.parse(new TextDecoder().decode(buf));
   };
 
@@ -282,6 +327,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
   const commands = alignHistory(history, layerPaths.length);
   const layerCount = layerPaths.length;
   const layerHashes = new Array(layerCount).fill(null); // zstd-fallback path only: sha256 of the decompressed layer
+  const hashSinks = new Array(layerCount).fill(null);   // incremental hashers, hex'd after each layer drains
 
   // ---------------- pass 2: analyze each layer in order ----------------
   const squashed = new FileTree();
@@ -313,7 +359,6 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     if (!meta) throw new Error(`layer blob missing from archive: ${rel}`);
 
     let compression = layerCompressionHints[i];
-    if (compression === 'auto') compression = await sniffCompression(blob, meta.dataOffset);
 
     progress('layer', { index: i, total: layerCount, detail: `decompressing layer ${i + 1}/${layerCount}` });
 
@@ -322,7 +367,12 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     let entryBytes = 0;
     let sawAny = false;
     try {
-      for await (const { header } of iterTarEntries(await layerStream(blob, meta.dataOffset, meta.size, compression, maxLayerBytes, sessionHolder, layerHashes, i), {
+      const { stream: layerBytes, head: layerHead } = await outerLayerSource(meta);
+      if (compression === 'auto') compression = compressionFromHead(layerHead);
+      for await (const { header } of iterTarEntries(await layerStreamFrom({
+        compressed: layerBytes, head: layerHead, compression, maxLayerBytes,
+        sessionHolder, hashSink: hashSinks, layerIndex: i,
+      }), {
         collectData: () => false,
       })) {
         sawAny = true;
@@ -332,6 +382,7 @@ export async function analyzeImage(blob, { onProgress = () => {}, topLimit = 20,
     } catch (err) {
       throw new Error(`Failed to unpack layer ${i + 1}/${layerCount} (${rel}): ${err.message}`);
     }
+    if (hashSinks[i]) layerHashes[i] = hashSinks[i].digestHex();
     if (!sawAny) warnings.push(`layer ${i} is empty`);
 
     // --- layer tree (for leaf detection + file list) ---

@@ -8,9 +8,10 @@
 - **gzip-compressed layers**, decompressed on the fly with `DecompressionStream`
 - **zstd-compressed layers** — natively where the browser provides
   `DecompressionStream('zstd')`, otherwise through the bundled pure-JavaScript
-  streaming decoder (`assets/vendor/fzstd`, MIT). The fallback decodes one layer
-  in memory; gzip layers stream end-to-end; and the fallback path **always
-  enforces the byte cap mid-decode** (see [Decoder integrity](ARCHITECTURE.md)). Verified
+  streaming decoder (`assets/vendor/fzstd`, MIT). The fallback streams
+  **end to end** (decoded blocks flow straight into the tar parser); gzip
+  layers stream end-to-end; and the fallback path **always enforces the byte
+  cap mid-decode** (see [Decoder integrity](ARCHITECTURE.md)). Verified
   against dive's `oci-save-zstd` golden — it passes. Frames **without** a
   content size (streamed compression, e.g. containerd/buildx) are supported and
   bounded the same way. Every decompressed fallback layer is
@@ -32,10 +33,10 @@
   verify the image config's `diff_ids`). Nothing is uploaded.
 - **Large files** are handled by streaming the archive in slices (`Blob.slice`)
   through `DecompressionStream`; the outer archive is never loaded whole into
-  memory. Memory scales with the **largest single layer**, not with the archive's
-  total size or file count: gzip layers and native-zstd layers stream end-to-end,
-  while the fallback decoder holds one layer in memory at a time — released
-  after each analysis (worker termination in the browser; GC-able in node) —
+  memory. Memory scales with the **largest single layer** (bounded by the
+  decoder window and chunk sizes on the fallback path), not with the archive's
+  total size or file count: gzip layers, native-zstd layers and fallback-zstd
+  layers all stream end-to-end now —
   see the [memory bench section](BENCHMARKS.md)
 - **UI:** filterable layer diff lists, wasted-space table with per-path copy counts, efficiency gauge, Wasted and Reclaimable byte stats (both defined in place), one-click copy of the creating command, keyboard-accessible dropzone, self-hosted Geist fonts (no CDN)
 
@@ -43,29 +44,39 @@
 
 - **zstd relies on the decoder path.** Where neither native `DecompressionStream('zstd')`
   nor a successful fallback decode is available, the layer cannot be read and the error
-  message says exactly that. The bundled pure-JS fallback holds one layer in memory — gzip
-  layers remain fully streaming. Legacy `docker save` archives do not carry zstd
-  layers; `oci-save` zstd is the supported layout.
-- **The fallback decoder refuses single layers larger than 160 MiB (167,772,160 bytes).**
-  The fallback must hold one decompressed layer in memory; a layer above the
-  limit is refused **before allocating** — the check reads the zstd frame content
-  size from the header, so even a 27 KB archive claiming an 600 MiB layer is
-  refused without decoding (verified). Frames **without** a content size
-  (streamed compression, e.g. containerd/buildx) are allowed through and the
-  decode itself is cut off the moment it crosses the cap (zstd blocks are
-  ≤ 128 KiB, so overshoot is at most one block). The error names the layer, the raw byte
-  counts and the remedy (gzip layers stream end-to-end and are unaffected).
-  Callers of `analyzeImage()` can raise or lower the limit with the `maxLayerBytes`
-  option. **Tested up to the limit:** a 159 MiB-content layer passes on node
-  (rss 853.4 MB peak, 1081 ms) and a 160 MiB-content layer whose tar lands 2 KB
-  over the limit is refused pre-allocation; in real Chromium a 150 MiB
-  incompressible single layer passes end-to-end with zero console errors —
-  see the [browser benchmark table](BENCHMARKS.md). The python:3.12-slim single zstd layer
-  (114.4 MiB) also passes.
-- **`.tar.gz` / `.tar.zst` of a docker-archive is not supported.** `docker save`
-  emits an uncompressed `.tar` already; layerscope expects exactly that and
-  detects the outer gzip/zstd magic bytes to say so instead of failing with the
-  generic "no manifest" error.
+  message says exactly that. The bundled pure-JS fallback streams end to end —
+  decoded blocks flow into the tar parser and are never buffered whole; gzip
+  layers remain fully streaming too. Legacy `docker save` archives do not carry
+  zstd layers; `oci-save` zstd is the supported layout.
+- **The fallback decoder refuses single layers above an 8 GiB uncompressed
+  budget (default; 8,589,934,592 bytes).** The check reads the zstd frame
+  content size from the header, so even a tiny crafted archive claiming an
+  17 GiB layer is refused **before allocating** (verified in unit tests and in
+  real Chromium). Frames **without** a content size (streamed compression,
+  e.g. containerd/buildx) are allowed through and the decode itself is cut off
+  the moment it crosses the cap (zstd blocks are ≤ 128 KiB, so overshoot is at
+  most one block; verified mid-decode refusal at a small caller-supplied
+  `maxLayerBytes`). The error names the layer, the raw byte counts and the
+  remedy (gzip layers stream end-to-end and are unaffected). Callers of
+  `analyzeImage()` can raise or lower the budget with the `maxLayerBytes`
+  option. **Tested:** a 300 MiB incompressible single layer analyzes end to
+  end on node and in real Chromium (the CI fixture job asserts the browser
+  numbers equal a node reference analysis; see run 42804365204). A frame
+  with an **explicit window descriptor larger than 32 MiB** (ultra/very-long
+  range modes) is refused with `WINDOW_TOO_BIG` before allocating — single-
+  segment frames (window == content size) are exempt; for multi-frame blobs
+  the check applies to the first frame and later frames are bounded by the
+  byte budget and the decoder's internal ~2 GB hard cap. The python:3.12-slim
+  single zstd layer (114.4 MiB) also passes, as did every pre-existing
+  fixture byte-for-byte.
+- **`.tar.gz` / `.tar.zst` of a docker-archive is supported, at a cost.**
+  `docker save` emits an uncompressed `.tar` already, but if you pipe it
+  through gzip/zstd anyway layerscope now stream-decompresses the wrapper
+  into the tar parser instead of rejecting it. Member access re-scans the
+  wrapper from the top per layer (O(layers × archive) decompression), so it
+  is fine for small/medium images but slow for multi-GB ones — keep using
+  plain `docker save` there. The analysis numbers are identical to the
+  unwrapped archive (asserted in node and in real Chromium).
 - **OCI indexes are platform-picked, not registry-resolved.** The picker
   lists exactly the manifests present inside the archive's `index.json` —
   layerscope never talks to a registry. Default selection is `linux/amd64`

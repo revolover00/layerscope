@@ -114,10 +114,16 @@ class ByteStream {
     return out;
   }
 
-  // Release n bytes without copying.
-  skip(n) {
+  // Release n bytes without copying. Streams from the reader as needed —
+  // does NOT require (or hold) the full n bytes up front.
+  async skip(n) {
     let remaining = n;
     while (remaining > 0) {
+      if (this.buffered === 0) {
+        if (!(await this.ensure(1))) {
+          throw new Error('tar: unexpected end of archive while skipping entry data');
+        }
+      }
       const headChunk = this.chunks[0];
       const avail = headChunk.byteLength - this.head;
       const grab = Math.min(avail, remaining);
@@ -130,6 +136,25 @@ class ByteStream {
         this.head = 0;
       }
     }
+  }
+
+  // Next bytes WITHOUT consuming them (for magic sniffing on streamed data).
+  async peek(n) {
+    if (n <= 0) return new Uint8Array(0);
+    await this.ensure(n);
+    const want = Math.min(n, this.buffered);
+    const out = new Uint8Array(want);
+    let written = 0;
+    let index = 0;
+    while (written < want) {
+      const chunk = this.chunks[index];
+      const start = index === 0 ? this.head : 0;
+      const grab = Math.min(chunk.byteLength - start, want - written);
+      out.set(chunk.subarray(start, start + grab), written);
+      written += grab;
+      index += 1;
+    }
+    return out;
   }
 }
 
@@ -173,20 +198,18 @@ export function tarTypeName(typeflag) {
   return TAR_TYPE[typeflag] || 'unknown';
 }
 
-/**
- * Iterate over the entries of a tar stream.
- *
- * @param {ReadableStream<Uint8Array>} readable
- * @param {object} [opts]
- * @param {(header: object) => boolean} [opts.collectData] return true to keep
- *   the entry's file data in memory on the yielded object (never use for layer blobs).
- * @returns {AsyncGenerator<{header: object, data: Uint8Array|null, offset: number}>}
- *   Each entry's absolute offset (start of its header) is reported for slicing.
- */
-export async function* iterTarEntries(readable, opts = {}) {
-  const collectData = opts.collectData || (() => false);
-  const stream = new ByteStream(readable);
+// Hard cap on the in-memory size of a tar control entry (PAX/GNU extended
+// headers carry only metadata). Anything larger is treated as a corrupt or
+// hostile archive rather than buffered.
+const CONTROL_ENTRY_MAX = 4 * 1024 * 1024; // 4 MiB
 
+// Low-level tar walk: yields one entry per non-control entry, positioned
+// EXACTLY after the entry's header block (its data section is NOT consumed).
+// Control entries (PAX/GNU extended headers) are consumed internally. The
+// caller decides how to drain each entry's data section — skip it, collect
+// it, or hand out a limited stream — and must do exactly one of those before
+// the next iteration step.
+async function* walkTar(stream) {
   let paxNext = null;   // attrs from a 'x' (per-file) extended header
   let paxGlobal = null; // attrs from a 'g' (global) extended header
   let gnuLongName = null;
@@ -221,27 +244,26 @@ export async function* iterTarEntries(readable, opts = {}) {
     const dataOffset = stream.abs;
     const padded = Math.ceil(size / BLOCK) * BLOCK;
 
-    // make sure the data section (and its padding) is actually buffered
-    if (padded > 0) {
-      if (!(await stream.ensure(padded))) {
-        throw new Error(`tar: unexpected end of archive inside entry ${probeOffset} (${name}), wanted ${padded} bytes`);
-      }
-    }
-
     // ---- control entries (no file data of their own) ------------------
-    if (typeflag === 'x' || typeflag === 'g') {
+    if (typeflag === 'x' || typeflag === 'g' || typeflag === 'L' || typeflag === 'K') {
+      if (padded > CONTROL_ENTRY_MAX) {
+        throw new Error(`tar: control entry (${typeflag}) at offset ${probeOffset} is ${padded} bytes, exceeding the ${CONTROL_ENTRY_MAX}-byte cap on extended headers`);
+      }
+      if (padded > 0 && !(await stream.ensure(padded))) {
+        throw new Error(`tar: unexpected end of archive inside control entry at offset ${probeOffset} (${name}), wanted ${padded} bytes`);
+      }
       const payload = stream.take(padded);
-      const attrs = parsePax(payload.subarray(0, size));
-      if (typeflag === 'x') paxNext = { ...(paxGlobal || {}), ...attrs };
-      else paxGlobal = { ...(paxGlobal || {}), ...attrs };
-      continue;
-    }
-    if (typeflag === 'L') { // GNU long name
-      gnuLongName = decoder.decode(stream.take(padded).subarray(0, size)).replace(/\0+$/, '');
-      continue;
-    }
-    if (typeflag === 'K') { // GNU long linkname
-      gnuLongLink = decoder.decode(stream.take(padded).subarray(0, size)).replace(/\0+$/, '');
+      if (typeflag === 'x') {
+        const attrs = parsePax(payload.subarray(0, Math.min(size, payload.byteLength)));
+        paxNext = { ...(paxGlobal || {}), ...attrs };
+      } else if (typeflag === 'g') {
+        const attrs = parsePax(payload.subarray(0, Math.min(size, payload.byteLength)));
+        paxGlobal = { ...(paxGlobal || {}), ...attrs };
+      } else if (typeflag === 'L') { // GNU long name
+        gnuLongName = decoder.decode(payload.subarray(0, Math.min(size, payload.byteLength))).replace(/\0+$/, '');
+      } else { // 'K' — GNU long linkname
+        gnuLongLink = decoder.decode(payload.subarray(0, Math.min(size, payload.byteLength))).replace(/\0+$/, '');
+      }
       continue;
     }
 
@@ -273,16 +295,92 @@ export async function* iterTarEntries(readable, opts = {}) {
       linkname,
     };
 
+    yield { header, probeOffset, dataOffset, padded: Math.ceil(header.size / BLOCK) * BLOCK };
+  }
+}
+
+/**
+ * Iterate over the entries of a tar stream.
+ *
+ * @param {ReadableStream<Uint8Array>} readable
+ * @param {object} [opts]
+ * @param {(header: object) => boolean} [opts.collectData] return true to keep
+ *   the entry's file data in memory on the yielded object (never use for layer blobs).
+ * @returns {AsyncGenerator<{header: object, data: Uint8Array|null, offset: number}>}
+ *   Each entry's absolute offset (start of its header) is reported for slicing.
+ */
+export async function* iterTarEntries(readable, opts = {}) {
+  const collectData = opts.collectData || (() => false);
+  const stream = new ByteStream(readable);
+
+  for await (const { header, probeOffset, dataOffset, padded } of walkTar(stream)) {
     let data = null;
     if (collectData(header)) {
-      data = stream.take(padded).subarray(0, size);
+      if (padded > 0 && !(await stream.ensure(padded))) {
+        throw new Error(`tar: unexpected end of archive inside entry ${probeOffset} (${header.name}), wanted ${padded} bytes`);
+      }
+      data = stream.take(padded).subarray(0, header.size);
       data = data.slice(); // copy out of the padded buffer
     } else {
-      stream.skip(padded);
+      // streaming skip: pulls from the reader as needed, never buffers the entry
+      await stream.skip(padded);
     }
 
     yield { header, data, offset: probeOffset, dataOffset };
   }
+}
+
+/**
+ * Open a tar stream positioned at (targetOffset) and return a LIMITED
+ * ReadableStream yielding exactly (targetSize) bytes — the data section of
+ * the archive member whose header ends at targetOffset. Nothing past the
+ * target's data is read, and the target's bytes are never buffered as a
+ * whole: the stream pulls on demand from the underlying reader.
+ *
+ * Used for compressed (.tar.gz / .tar.zst) OUTER archives, where random
+ * access is impossible: the caller decompresses the wrapper once per layer
+ * and drains only up to that layer's blob.
+ *
+ * @returns {Promise<{stream: ReadableStream<Uint8Array>, head: Uint8Array}>}
+ *   head: up to 32 bytes of the entry's data (for magic sniffing), consumed
+ *   from the SAME position the limited stream starts at.
+ */
+export async function openTarEntryDataStream(readable, targetOffset, targetSize, chunkSize = DEFAULT_CHUNK) {
+  const stream = new ByteStream(readable);
+  for await (const entry of walkTar(stream)) {
+    if (entry.dataOffset === targetOffset && entry.header.size === targetSize) {
+      const head = await stream.peek(Math.min(32, targetSize));
+      let sent = 0;
+      const limited = new ReadableStream({
+        async pull(controller) {
+          const remaining = targetSize - sent;
+          if (remaining <= 0) { controller.close(); return; }
+          // wait for at least one buffered byte (pulling from the reader)
+          while (stream.buffered === 0) {
+            const { done, value } = await stream.reader.read();
+            if (done) {
+              controller.error(new Error(`tar: unexpected end of archive inside entry at offset ${targetOffset}`));
+              return;
+            }
+            if (value && value.byteLength) {
+              stream.chunks.push(value);
+              stream.buffered += value.byteLength;
+            }
+          }
+          const take = Math.min(Math.min(stream.buffered, remaining), chunkSize);
+          controller.enqueue(stream.take(take));
+          sent += take;
+        },
+        cancel(reason) {
+          stream.reader.cancel(reason).catch(() => {});
+        },
+      });
+      return { stream: limited, head };
+    }
+    // not the target: drain and keep walking
+    await stream.skip(Math.ceil(entry.header.size / BLOCK) * BLOCK);
+  }
+  throw new Error(`tar: no entry with data at offset ${targetOffset} (size ${targetSize}) found in archive`);
 }
 
 /** Read an entire blob out of a File/Blob-like object by slicing. */
