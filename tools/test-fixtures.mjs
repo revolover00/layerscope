@@ -23,6 +23,16 @@
 // LONG_TAG is the deliberately long repository tag (78 chars) used by
 // browser-fixtures.mjs to prove the result header can't leak into the
 // "Total size" column.
+//
+// test5-compare-a.tar / test6-compare-b.tar form a known-delta BEFORE/AFTER
+// pair for the compare-view assertions in browser-fixtures.mjs (and for the
+// PR screenshots):
+//   a — 4 layers: cfg 200 KiB + keep / big.bin 5 MiB / whiteout / cfg rewrite
+//       4 layers, wasted 5,652,480 bytes (same content class as test1-waste)
+//   b — 2 layers: cfg' 150 KiB + keep / scripts/patch.sh 1 KiB
+//       2 layers, wasted 0 — the "optimized rebuild"
+// Deltas (b − a) — wasted −5,652,480 bytes, layers −2, efficiency +96.4 pts,
+// changed final paths: /app/config.txt (200→150 KB) and /scripts/patch.sh.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -102,9 +112,52 @@ async function main() {
   const longname = synthesizeRaw({ format: 'legacy', compression: 'none', layers: tinyLayers, history: tinyHistory, repoTag: LONG_TAG });
   writeFileSync(join(outDir, 'test4-longname.tar'), longname);
   console.log(`wrote ${join(outDir, 'test4-longname.tar')} (${longname.length} bytes)`);
+
+  // ---- compare-view pair (see header comment) ----
+  const compareALayers = () => [
+    withDirs([
+      { name: 'app/config.txt', content: randomContent(200 * 1024, 1001), mode: 0o644 },
+      ...SMALL_FILES,
+    ]),
+    withDirs([
+      { name: 'data/big.bin', content: randomContent(5 * 1024 * 1024, 1002), mode: 0o644 },
+    ]),
+    withDirs([
+      { name: 'data/.wh.big.bin', typeflag: '0', content: Buffer.alloc(0) },
+    ]),
+    withDirs([
+      { name: 'app/config.txt', content: randomContent(200 * 1024, 1003), mode: 0o644 },
+    ]),
+  ];
+  const compareAHistory = [
+    { created_by: '/bin/sh -c dd if=/dev/urandom of=/app/config.txt bs=1k count=200' },
+    { created_by: '/bin/sh -c dd if=/dev/urandom of=/data/big.bin bs=1M count=5' },
+    { created_by: '/bin/sh -c rm /data/big.bin' },
+    { created_by: '/bin/sh -c sed -i s/a/c/ /app/config.txt' },
+  ];
+  const compareBLayers = () => [
+    withDirs([
+      { name: 'app/config.txt', content: randomContent(150 * 1024, 2001), mode: 0o644 },
+      ...SMALL_FILES,
+    ]),
+    withDirs([
+      { name: 'scripts/patch.sh', content: randomContent(1024, 2002), mode: 0o755 },
+    ]),
+  ];
+  const compareBHistory = [
+    { created_by: '/bin/sh -c dd if=/dev/urandom of=/app/config.txt bs=1k count=150' },
+    { created_by: '/bin/sh -c install -m 755 patch.sh /scripts/patch.sh' },
+  ];
+  const compareA = synthesizeRaw({ format: 'legacy', compression: 'none', layers: compareALayers(), history: compareAHistory, repoTag: 'layerscope/compare-a:latest' });
+  writeFileSync(join(outDir, 'test5-compare-a.tar'), compareA);
+  console.log(`wrote ${join(outDir, 'test5-compare-a.tar')} (${compareA.length} bytes)`);
+  const compareB = synthesizeRaw({ format: 'legacy', compression: 'none', layers: compareBLayers(), history: compareBHistory, repoTag: 'layerscope/compare-b:latest' });
+  writeFileSync(join(outDir, 'test6-compare-b.tar'), compareB);
+  console.log(`wrote ${join(outDir, 'test6-compare-b.tar')} (${compareB.length} bytes)`);
   console.log(`long tag (${LONG_TAG.length} chars): ${LONG_TAG}`);
 
   console.log('expected (per ci assert): 4 layers, wasted 5652480 bytes, efficiency ≈ 3.6%');
+  console.log('compare pair: a→b deltas — wasted −5,652,480 bytes, layers −2, changed paths /app/config.txt and /scripts/patch.sh');
 }
 
 const isMain = process.argv[1] && process.argv[1].endsWith('test-fixtures.mjs');

@@ -82,6 +82,12 @@
       <span class="hero-alt-note">bundled <code>layerscope/sample:latest</code> (92&nbsp;KiB) — a real docker&nbsp;save archive with an <code>add → modify → delete</code> history</span>
     </div>
 
+    <div class="hero-alt">
+      <span>Before/after a rebuild?</span>
+      <button id="compare-btn" class="btn btn-ghost" type="button">Compare two images →</button>
+      <span class="hero-alt-note">both files stay on this device, side by side</span>
+    </div>
+
     <ul class="hero-facts">
       <li><span class="fact-idx">01</span><strong>Legacy + OCI</strong><span class="fact-body">manifest.json and index.json layouts, gzip layers via DecompressionStream</span></li>
       <li><span class="fact-idx">02</span><strong>Memory-safe</strong><span class="fact-body">Reads the archive in slices; memory scales with the largest layer (tested up to 150 MiB per layer)</span></li>
@@ -130,6 +136,8 @@
 
       <div class="summary-actions">
         <button id="analyze-another" class="btn btn-ghost" type="button">← Analyze another</button>
+        <button id="export-json" class="btn btn-ghost" type="button" aria-label="Download the analysis as JSON">Export JSON</button>
+        <button id="export-csv" class="btn btn-ghost" type="button" aria-label="Download the analysis as CSV">Export CSV</button>
       </div>
     </div>
 
@@ -143,6 +151,7 @@
       <button class="tab is-active" id="tab-layers" role="tab" aria-selected="true" aria-controls="panel-layers">Layers</button>
       <button class="tab" id="tab-top" role="tab" aria-selected="false" aria-controls="panel-top">Top 20 files</button>
       <button class="tab" id="tab-wasted" role="tab" aria-selected="false" aria-controls="panel-wasted">Wasted space</button>
+      <button class="tab" id="tab-suggestions" role="tab" aria-selected="false" aria-controls="panel-suggestions">Suggestions</button>
     </div>
 
     <!-- Layers panel -->
@@ -247,6 +256,109 @@
       </table>
 </div>
       <p id="wasted-empty" class="empty-state" hidden>No duplicated or deleted-then-readded paths — every path appears in exactly one layer. ✓</p>
+    </div>
+
+    <!-- Suggestions panel -->
+    <div id="panel-suggestions" class="panel" role="tabpanel" aria-labelledby="tab-suggestions" hidden>
+      <div class="panel-head">
+        <div><h3>What to change</h3><p class="panel-sub">Concrete fixes for what the analysis found, each with the bytes involved. Evidence comes from the layer tar headers — when only an upper bound is provable, the text says so.</p></div>
+        <span id="suggestions-count" class="chip">—</span>
+      </div>
+      <div id="suggestions-list" class="suggestions-list"></div>
+      <p id="suggestions-empty" class="empty-state" hidden>Nothing to flag — every file is written once and caches are cleaned where they are created. ✓</p>
+    </div>
+
+  </div>
+</section>
+
+<!-- ============ compare view ============ -->
+<section id="compare" class="compare" hidden>
+  <div class="container">
+
+    <div class="compare-head">
+      <div class="compare-head-text">
+        <p class="summary-eyebrow">compare</p>
+        <h2 class="compare-title" tabindex="-1" id="compare-title">Compare two images</h2>
+        <p class="panel-sub">Drop two <code>docker save</code> tarballs — typically the same image before and after a Dockerfile change. Both files stay on this device; nothing is uploaded.</p>
+      </div>
+      <div class="summary-actions">
+        <button id="compare-swap" class="btn btn-ghost" type="button" aria-label="Swap the two images">Swap sides ⇄</button>
+        <button id="compare-back" class="btn btn-ghost" type="button">← Back</button>
+      </div>
+    </div>
+
+    <div class="compare-grid">
+      <div class="compare-slot">
+        <p class="compare-slot-label"><span class="compare-badge" aria-hidden="true">A</span> before</p>
+        <div id="compare-drop-a" class="dropzone compare-dropzone" role="button" tabindex="0" aria-label="Choose the first (before) image tarball">
+          <svg class="dz-icon" width="34" height="34" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+            <path d="M22 30V10m0 0-8 8m8-8 8 8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M7 30v5.5A2.5 2.5 0 0 0 9.5 38h25a2.5 2.5 0 0 0 2.5-2.5V30" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+          </svg>
+          <p class="dz-title">Drop image A here</p>
+          <button id="compare-browse-a" class="btn btn-ghost" type="button">Choose file…</button>
+          <input id="compare-file-a" type="file" accept=".tar,application/x-tar" hidden>
+        </div>
+        <p id="compare-status-a" class="compare-slot-status" aria-live="polite">No image loaded yet.</p>
+      </div>
+      <div class="compare-slot">
+        <p class="compare-slot-label"><span class="compare-badge" aria-hidden="true">B</span> after</p>
+        <div id="compare-drop-b" class="dropzone compare-dropzone" role="button" tabindex="0" aria-label="Choose the second (after) image tarball">
+          <svg class="dz-icon" width="34" height="34" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+            <path d="M22 30V10m0 0-8 8m8-8 8 8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M7 30v5.5A2.5 2.5 0 0 0 9.5 38h25a2.5 2.5 0 0 0 2.5-2.5V30" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+          </svg>
+          <p class="dz-title">Drop image B here</p>
+          <button id="compare-browse-b" class="btn btn-ghost" type="button">Choose file…</button>
+          <input id="compare-file-b" type="file" accept=".tar,application/x-tar" hidden>
+        </div>
+        <p id="compare-status-b" class="compare-slot-status" aria-live="polite">No image loaded yet.</p>
+      </div>
+    </div>
+
+    <div id="compare-error" class="warnings error-box" hidden></div>
+
+    <div id="compare-results" class="compare-results" hidden>
+      <h3 id="compare-results-title" class="compare-results-title" tabindex="-1">A → B</h3>
+      <div class="compare-deltas" role="group" aria-label="Metric changes between the two images">
+        <div class="compare-delta" role="group" aria-label="Total size change">
+          <span class="cd-label">Total size</span>
+          <span class="cd-value" id="cd-total">—</span>
+          <span class="cd-sub" id="cd-total-sub">—</span>
+        </div>
+        <div class="compare-delta" role="group" aria-label="Wasted bytes change">
+          <span class="cd-label">Wasted</span>
+          <span class="cd-value" id="cd-wasted">—</span>
+          <span class="cd-sub" id="cd-wasted-sub">—</span>
+        </div>
+        <div class="compare-delta" role="group" aria-label="Reclaimable bytes change">
+          <span class="cd-label">Reclaimable</span>
+          <span class="cd-value" id="cd-reclaimable">—</span>
+          <span class="cd-sub" id="cd-reclaimable-sub">—</span>
+        </div>
+        <div class="compare-delta" role="group" aria-label="Efficiency score change">
+          <span class="cd-label">Efficiency</span>
+          <span class="cd-value" id="cd-efficiency">—</span>
+          <span class="cd-sub" id="cd-efficiency-sub">—</span>
+        </div>
+        <div class="compare-delta" role="group" aria-label="Layer count change">
+          <span class="cd-label">Layers</span>
+          <span class="cd-value" id="cd-layers">—</span>
+          <span class="cd-sub" id="cd-layers-sub">—</span>
+        </div>
+      </div>
+
+      <div class="panel-head">
+        <div><h3>Paths whose size changed most</h3><p class="panel-sub">Final manifest comparison — paths present in both images at the same size, or in neither, are omitted. A file that was created and then deleted shows up in the size and waste deltas above, not in this table.</p></div>
+      </div>
+      <div class="table-scroll">
+        <table class="table compare-table">
+          <thead><tr><th>Path</th><th class="num">A</th><th class="num">B</th><th class="num">Δ B−A</th></tr></thead>
+          <tbody id="compare-tbody"></tbody>
+        </table>
+      </div>
+      <p id="compare-empty" class="empty-state" hidden>The final file sets are byte-for-byte identical — all savings come from overwritten or deleted intermediate copies (see the deltas above).</p>
+      <p id="compare-counts" class="compare-counts"></p>
     </div>
 
   </div>

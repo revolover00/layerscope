@@ -34,6 +34,9 @@ Drop a `.tar` from `docker save` onto the page and layerscope shows what each la
 - Per layer: size, creating command, and files added / modified / deleted (whiteouts and opaque directories handled)
 - Image efficiency score, wasted bytes and reclaimable bytes
 - The 20 largest files, across all layers or in the final image
+- **Suggestions** — one card per problem the data proves (add-then-delete, caches cleaned in a later layer, rewritten paths, chown/chmod re-stores, largest wasted paths), each with the bytes involved and a plain-English fix
+- **Compare two images** — before/after a rebuild: size, waste, reclaimable, efficiency and layer-count deltas plus the paths whose size changed most
+- **Export JSON / CSV** — the layers, diffs and wasted paths, honouring the active filters; schema in [docs/EXPORT.md](docs/EXPORT.md)
 - Legacy `docker save` and OCI archives, gzip and zstd layers, a platform picker for multi-arch OCI indexes
 
 ## layerscope vs dive

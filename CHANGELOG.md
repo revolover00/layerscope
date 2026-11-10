@@ -6,6 +6,43 @@ All notable changes to layerscope are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Suggestions tab** (`src/core/insights.js`, pure functions over the analysis
+  result): one card per problem the tar headers actually prove, each with
+  severity, affected layers/paths, an upper-bound byte figure and a
+  plain-English fix. Rules: file added then deleted in a later layer;
+  package-manager caches created and removed in different layers (apt lists,
+  apt/apk/dnf/yum/pacman caches, pip/npm/yarn caches); the same path rewritten
+  in multiple layers (≥ 16 KiB of duplicated payload); equal-size rewrites in
+  chown/chmod/chgrp layers (tar cannot express "metadata only" — payloads are
+  re-stored in full); and the five largest wasted paths. Unit tests cover
+  every rule with positive and negative fixtures (`tests/insights.test.mjs`).
+- **Compare two images** (`src/core/compare.js` + compare view with a second
+  dropzone): per-metric deltas (total size, wasted, reclaimable, efficiency
+  in percentage points, layer count) and the final-manifest paths whose size
+  changed most (top 10 by absolute delta). Both files stay on the device.
+  `tests/compare-image.test.mjs`.
+- **Export JSON / CSV** (`src/core/exporter.js`): per-analysis export of
+  layers, diffs and wasted paths honouring the active filters (`fileKind` and
+  the path filter narrow diffs; the wasted-path filter narrows wasted paths;
+  layer selection / top scope / row limit are recorded under `filters` but
+  never limit the export). Schema and CSV layout documented in
+  [docs/EXPORT.md](docs/EXPORT.md) (`schemaVersion` field; the CSV carries no
+  timestamp and is byte-for-byte reproducible). No network calls.
+  `tests/exporter.test.mjs`.
+- Browser fixture job now also asserts: Suggestions content on the bundled
+  demo image (exactly two cards, `add-then-delete` with the `/app/data.bin`
+  path, layers 1 and 3, and the byte figure), the compare view on a
+  known-delta fixture pair (`test5-compare-a.tar` / `test6-compare-b.tar`,
+  generated deterministically by `tools/test-fixtures.mjs`), and that the
+  downloaded JSON/CSV exports deep-equal/byte-equal the Node-computed
+  documents — including one export under an active wasted-path filter.
+- `tools/capture-ui-screenshots.mjs`: captures the Suggestions, Compare and
+  Export views at 1280x800 and 390x844 widths in real Chromium; the CI
+  fixture job uploads them as the `ui-screenshots` artifact.
+- `docs/EXPORT.md`.
+
 ### Changed
 
 - README restructured; long material moved to docs/

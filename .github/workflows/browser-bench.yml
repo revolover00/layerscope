@@ -148,7 +148,34 @@ jobs:
           node tools/browser-fixtures.mjs --url http://127.0.0.1:8321 \
             --test1 /tmp/bench/test1-waste.tar \
             --test3 /tmp/bench/test3-zstd.tar \
-            --longname /tmp/bench/test4-longname.tar
+            --longname /tmp/bench/test4-longname.tar \
+            --test5 /tmp/bench/test5-compare-a.tar \
+            --test6 /tmp/bench/test6-compare-b.tar
+
+      # UI PR-preview screenshots (Suggestions / Compare / Export) at desktop
+      # and mobile widths for the reviewer — convenience references for the PR,
+      # not a verification gate (the numbers are asserted in the step above).
+      - name: Capture UI screenshots (desktop + mobile)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8323 --bind 127.0.0.1 >/tmp/http-shots.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          node tools/capture-ui-screenshots.mjs --url http://127.0.0.1:8323 \
+            --test5 /tmp/bench/test5-compare-a.tar \
+            --test6 /tmp/bench/test6-compare-b.tar \
+            --out-dir ui-screenshots
+
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-screenshots
+          path: ui-screenshots/
+          if-no-files-found: warn
+          retention-days: 14
 
       # ~3 GB fixture uploaded through the real file input (desktop viewport).
       # Asserts the analysis finishes, zero console/page errors, and the

@@ -22,8 +22,14 @@
 // Exits non-zero if any assertion or console/page error occurs.
 
 import { chromium } from 'playwright-core';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { openAsBlob } from 'node:fs';
+import assert from 'node:assert/strict';
 import { LONG_TAG } from './test-fixtures.mjs';
+import { analyzeImage } from '../src/core/analyze.js';
+import { compareAnalyses } from '../src/core/compare.js';
+import { buildExport, exportToJSON, exportToCSV } from '../src/core/exporter.js';
+import { formatBytes, formatPercent } from '../src/core/format.js';
 
 const args = process.argv.slice(2);
 const getArg = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
@@ -31,11 +37,16 @@ const url = getArg('--url') || 'http://127.0.0.1:8321';
 const test1 = getArg('--test1');
 const test3 = getArg('--test3');
 const longname = getArg('--longname'); // optional: test4-longname.tar (header-card long-name check)
-if (!test1 || !test3) { console.error('usage: node tools/browser-fixtures.mjs --url URL --test1 tar --test3 tar [--longname tar]'); process.exit(2); }
+const test5 = getArg('--test5'); // optional: test5-compare-a.tar (compare-before fixture)
+const test6 = getArg('--test6'); // optional: test6-compare-b.tar (compare-after fixture)
+if (!test1 || !test3) { console.error('usage: node tools/browser-fixtures.mjs --url URL --test1 tar --test3 tar [--longname tar] [--test5 tar --test6 tar]'); process.exit(2); }
 for (const [label, img] of [['test1-waste.tar', test1], ['test3-zstd.tar', test3]]) {
   if (!existsSync(img)) { console.error(`${label} not found: ${img}`); process.exit(2); }
 }
 if (longname && !existsSync(longname)) { console.error(`test4-longname.tar not found: ${longname}`); process.exit(2); }
+if ((test5 && !test6) || (!test5 && test6)) { console.error('--test5 and --test6 must be passed together'); process.exit(2); }
+if (test5 && !existsSync(test5)) { console.error(`test5-compare-a.tar not found: ${test5}`); process.exit(2); }
+if (test6 && !existsSync(test6)) { console.error(`test6-compare-b.tar not found: ${test6}`); process.exit(2); }
 
 const EXPECTED = {
   layers: '4 layers',
@@ -226,6 +237,219 @@ if (longname) {
     if (consoleErrors.length) fail('test4-longname.tar', `console/page errors: ${consoleErrors.join(' | ')}`);
   }
   await longBrowser.close();
+}
+
+// ---------- Suggestions tab: content assertions on the bundled demo image ----------
+// Loads assets/samples/layerscope-demo.tar through the sample button, opens
+// the Suggestions tab and asserts the two rules that must fire on it (the
+// demo image is byte-stable: added in layer 1, whiteouted in layer 3).
+{
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const consoleErrors = [];
+  page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
+
+  await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+  await page.click('#sample-btn');
+  const outcome = await Promise.race([
+    page.waitForFunction(() => {
+      const a = document.getElementById('analysis');
+      const o = document.getElementById('progress-overlay');
+      return a && !a.hidden && o && o.hidden;
+    }, null, { timeout: 300000, polling: 100 }).then(() => 'ok'),
+    page.waitForSelector('#error-box', { state: 'visible', timeout: 300000 }).then(() => 'error'),
+  ]);
+  if (outcome === 'error') {
+    const text = await page.$eval('#error-box', (el) => el.textContent.trim());
+    fail('suggestions', `sample analysis failed in the browser: ${text}`);
+  } else {
+    await page.click('#tab-suggestions');
+    await page.waitForFunction(() => !document.getElementById('panel-suggestions').hidden, null, { timeout: 30000 });
+    const state = await page.evaluate(() => ({
+      ariaSelected: document.getElementById('tab-suggestions').getAttribute('aria-selected'),
+      layersHidden: document.getElementById('panel-layers').hidden,
+      count: document.getElementById('suggestions-count').textContent,
+      cards: [...document.querySelectorAll('.suggestion')].map((card) => ({
+        id: card.dataset.suggestionId,
+        severity: (card.querySelector('.severity') || {}).textContent || null,
+        text: card.textContent,
+      })),
+    }));
+    console.log(`::notice::browser-fixtures suggestions: ${JSON.stringify({ count: state.count, ids: state.cards.map((c) => c.id) })}`);
+    if (state.ariaSelected !== 'true') fail('suggestions', `tab aria-selected=${state.ariaSelected}, expected true`);
+    if (!state.layersHidden) fail('suggestions', 'panel-layers is still visible with Suggestions active');
+    if (state.cards.length !== 2) fail('suggestions', `expected exactly 2 suggestion cards on the demo image, got ${state.cards.length}`);
+    const atd = state.cards.find((c) => c.id === 'add-then-delete');
+    if (!atd) fail('suggestions', 'add-then-delete card is missing');
+    else {
+      if (!atd.text.includes('/app/data.bin')) fail('suggestions', 'add-then-delete card does not name /app/data.bin');
+      if (!atd.text.includes('64.0 KB')) fail('suggestions', `add-then-delete card does not carry the 64.0 KB byte figure: ${atd.text}`);
+      if (!/Layer(s)? 1, 3/.test(atd.text)) fail('suggestions', `add-then-delete card does not name layers 1 and 3: ${atd.text}`);
+      if (!atd.text.includes('Fix.')) fail('suggestions', 'add-then-delete card is missing the fix text');
+    }
+    const twp = state.cards.find((c) => c.id === 'top-wasted-paths');
+    if (!twp) fail('suggestions', 'top-wasted-paths card is missing');
+    else if (!twp.text.includes('/app/data.bin') || !twp.text.includes('/app/config.yml')) fail('suggestions', 'top-wasted-paths card does not list both wasted paths');
+
+    // keyboard reachability: focus the tab, activate with Enter
+    await page.focus('#tab-suggestions');
+    await page.keyboard.press('Enter');
+    const kbSelected = await page.$eval('#tab-suggestions', (el) => el.getAttribute('aria-selected'));
+    if (kbSelected !== 'true') fail('suggestions', `keyboard Enter on the tab did not activate it (aria-selected=${kbSelected})`);
+
+    // ---------- Export: downloaded JSON must equal the node-computed document ----------
+    const demoPath = 'assets/samples/layerscope-demo.tar';
+    const nodeAnalysis = await analyzeImage(await openAsBlob(demoPath));
+    const mkFilters = (wastedPathFilter) => ({
+      selectedLayer: 0, fileKind: 'all', pathFilter: '', wastedPathFilter, topScope: 'layers', rowLimit: 400,
+    });
+    const nodeDoc = buildExport(nodeAnalysis, { generatedAt: '2000-01-01T00:00:00.000Z', filters: mkFilters('') });
+
+    const [jsonDownload] = await Promise.all([
+      page.waitForEvent('download', { timeout: 30000 }),
+      page.click('#export-json'),
+    ]);
+    const jsonName = jsonDownload.suggestedFilename();
+    const jsonText = readFileSync(await jsonDownload.path(), 'utf8');
+    const browserDoc = JSON.parse(jsonText);
+    browserDoc.exportedAt = '<masked>';
+    const nodeDocMasked = { ...nodeDoc, exportedAt: '<masked>' };
+    try {
+      assert.deepEqual(browserDoc, nodeDocMasked);
+      console.log('::notice::browser-fixtures export: JSON download deep-equals the node-computed export document (exportedAt masked)');
+    } catch (e) {
+      fail('export', `downloaded JSON differs from the node-computed export: ${e.message}`);
+    }
+    if (!/^layerscope-layerscope-sample-latest-\d{8}-\d{6}\.json$/.test(jsonName)) {
+      fail('export', `unexpected JSON download filename: ${jsonName}`);
+    }
+
+    // CSV must be byte-for-byte identical to the node-rendered CSV
+    const [csvDownload] = await Promise.all([
+      page.waitForEvent('download', { timeout: 30000 }),
+      page.click('#export-csv'),
+    ]);
+    const csvName = csvDownload.suggestedFilename();
+    const csvText = readFileSync(await csvDownload.path(), 'utf8');
+    const expectedCsv = exportToCSV(nodeDoc);
+    if (csvText !== expectedCsv) {
+      fail('export', `downloaded CSV differs from the node-rendered CSV (${csvText.length} vs ${expectedCsv.length} bytes)`);
+    } else {
+      console.log('::notice::browser-fixtures export: CSV download is byte-for-byte identical to the node-rendered CSV');
+    }
+    if (!/^layerscope-layerscope-sample-latest-\d{8}-\d{6}\.csv$/.test(csvName)) {
+      fail('export', `unexpected CSV download filename: ${csvName}`);
+    }
+
+    // filtered export honours the active wasted-path filter
+    await page.fill('#wasted-filter', 'data.bin');
+    const [filtDownload] = await Promise.all([
+      page.waitForEvent('download', { timeout: 30000 }),
+      page.click('#export-json'),
+    ]);
+    const filtDoc = JSON.parse(readFileSync(await filtDownload.path(), 'utf8'));
+    const nodeFilt = buildExport(nodeAnalysis, { generatedAt: '2000-01-01T00:00:00.000Z', filters: mkFilters('data.bin') });
+    filtDoc.exportedAt = '<masked>';
+    const nodeFiltMasked = { ...nodeFilt, exportedAt: '<masked>' };
+    try {
+      assert.deepEqual(filtDoc, nodeFiltMasked);
+      console.log('::notice::browser-fixtures export: filtered JSON (wastedPathFilter=data.bin) deep-equals the node-computed document');
+    } catch (e) {
+      fail('export', `filtered export differs from the node-computed document: ${e.message}`);
+    }
+    if (filtDoc.wastedPaths.length !== 1 || filtDoc.wastedPaths[0].path !== '/app/data.bin') {
+      fail('export', `filtered export carried ${filtDoc.wastedPaths.length} wasted paths, expected exactly /app/data.bin`);
+    }
+  }
+  if (consoleErrors.length) fail('suggestions', `console/page errors: ${consoleErrors.join(' | ')}`);
+  await page.close();
+}
+
+// ---------- Compare view: known-delta fixture pair ----------
+// test5-compare-a.tar (before) → test6-compare-b.tar (after). The expected
+// numbers come from the same comparison code path in node, not from prose.
+if (test5 && test6) {
+  const aAnal = await analyzeImage(await openAsBlob(test5));
+  const bAnal = await analyzeImage(await openAsBlob(test6));
+  const cmp = compareAnalyses(aAnal, bAnal);
+  const signedBytes = (d) => (d === 0 ? '0 B' : `${d > 0 ? '+' : '−'}${formatBytes(Math.abs(d))}`);
+  const signedPts = (d) => (d === 0 ? '±0.0 pts' : `${d > 0 ? '+' : '−'}${(Math.abs(d) * 100).toFixed(1)} pts`);
+  const signedCount = (d) => (d === 0 ? '±0' : `${d > 0 ? '+' : '−'}${Math.abs(d)}`);
+
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const consoleErrors = [];
+  page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
+
+  await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+  await page.click('#compare-btn');
+  await page.waitForFunction(() => !document.getElementById('compare').hidden, null, { timeout: 30000 });
+  await page.setInputFiles('#compare-file-a', test5);
+  await page.setInputFiles('#compare-file-b', test6);
+
+  const outcome = await Promise.race([
+    page.waitForFunction(() => {
+      const r = document.getElementById('compare-results');
+      const o = document.getElementById('progress-overlay');
+      return r && !r.hidden && o && o.hidden;
+    }, null, { timeout: 600000, polling: 100 }).then(() => 'ok'),
+    page.waitForSelector('#compare-error', { state: 'visible', timeout: 600000 }).then(() => 'error'),
+  ]);
+  if (outcome === 'error') {
+    const text = await page.$eval('#compare-error', (el) => el.textContent.trim());
+    fail('compare', `compare analysis failed in the browser: ${text}`);
+  } else {
+    const dom = await page.evaluate(() => ({
+      total: document.getElementById('cd-total').textContent,
+      totalSub: document.getElementById('cd-total-sub').textContent,
+      wasted: document.getElementById('cd-wasted').textContent,
+      reclaimable: document.getElementById('cd-reclaimable').textContent,
+      efficiency: document.getElementById('cd-efficiency').textContent,
+      efficiencySub: document.getElementById('cd-efficiency-sub').textContent,
+      layers: document.getElementById('cd-layers').textContent,
+      layersSub: document.getElementById('cd-layers-sub').textContent,
+      counts: document.getElementById('compare-counts').textContent,
+      title: document.getElementById('compare-results-title').textContent,
+      rows: [...document.querySelectorAll('#compare-tbody tr')].map((tr) => tr.textContent.replace(/\s+/g, ' ').trim()),
+    }));
+    console.log(`::notice::browser-fixtures compare: ${JSON.stringify(dom)}`);
+    const expects = [
+      ['total', signedBytes(cmp.delta.totalSizeBytes)],
+      ['wasted', signedBytes(cmp.delta.wastedBytes)],
+      ['reclaimable', signedBytes(cmp.delta.reclaimableBytes)],
+      ['efficiency', signedPts(cmp.delta.efficiency)],
+      ['layers', signedCount(cmp.delta.layerCount)],
+    ];
+    for (const [key, want] of expects) {
+      if (dom[key] !== want) fail('compare', `${key} shows ${JSON.stringify(dom[key])}, expected ${JSON.stringify(want)}`);
+    }
+    const expectSubs = [
+      ['totalSub', `${formatBytes(cmp.before.totalSizeBytes)} → ${formatBytes(cmp.after.totalSizeBytes)}`],
+      ['efficiencySub', `${formatPercent(cmp.before.efficiency, 1)} → ${formatPercent(cmp.after.efficiency, 1)}`],
+      ['layersSub', `4 → 2 layers`],
+    ];
+    for (const [key, want] of expectSubs) {
+      if (dom[key] !== want) fail('compare', `${key} shows ${JSON.stringify(dom[key])}, expected ${JSON.stringify(want)}`);
+    }
+    if (!dom.counts.includes(`${cmp.changedPathCount} paths changed`)) fail('compare', `counts line does not report ${cmp.changedPathCount} changed paths: ${dom.counts}`);
+    if (!dom.counts.includes(`${cmp.addedPathCount} added`)) fail('compare', `counts line does not report ${cmp.addedPathCount} added: ${dom.counts}`);
+    if (dom.rows.length !== cmp.changedPaths.length) fail('compare', `expected ${cmp.changedPaths.length} changed-path rows, got ${dom.rows.length}`);
+    else {
+      if (!dom.rows[0].includes('/app/config.txt')) fail('compare', `first changed row is ${JSON.stringify(dom.rows[0])}, expected /app/config.txt`);
+      if (!dom.rows[1].includes('/scripts/patch.sh')) fail('compare', `second changed row is ${JSON.stringify(dom.rows[1])}, expected /scripts/patch.sh`);
+      if (!dom.rows[0].includes('50.0 KB')) fail('compare', `config.txt row does not carry the 50.0 KB delta: ${dom.rows[0]}`);
+    }
+    if (!dom.title.includes('test5-compare-a.tar') || !dom.title.includes('test6-compare-b.tar')) fail('compare', `results title does not name both files: ${dom.title}`);
+
+    // swap flips the direction of every delta
+    await page.click('#compare-swap');
+    await page.waitForFunction(() => document.getElementById('cd-layers').textContent === '+2', null, { timeout: 10000 });
+    const swappedTotal = await page.$eval('#cd-total', (el) => el.textContent);
+    if (swappedTotal !== signedBytes(-cmp.delta.totalSizeBytes)) fail('compare', `after swap, total is ${JSON.stringify(swappedTotal)}, expected ${JSON.stringify(signedBytes(-cmp.delta.totalSizeBytes))}`);
+    console.log(`::notice::browser-fixtures compare: swap flips deltas (layers +2, total ${swappedTotal})`);
+  }
+  if (consoleErrors.length) fail('compare', `console/page errors: ${consoleErrors.join(' | ')}`);
+  await page.close();
 }
 
 await browser.close();
