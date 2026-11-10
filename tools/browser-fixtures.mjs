@@ -341,7 +341,10 @@ if (longname) {
       fail('export', `unexpected CSV download filename: ${csvName}`);
     }
 
-    // filtered export honours the active wasted-path filter
+    // filtered export honours the active wasted-path filter — the filter
+    // input lives on the Wasted space tab, which the suggestions step left hidden
+    await page.click('#tab-wasted');
+    await page.waitForSelector('#panel-wasted:not([hidden])', { timeout: 10000 });
     await page.fill('#wasted-filter', 'data.bin');
     const [filtDownload] = await Promise.all([
       page.waitForEvent('download', { timeout: 30000 }),
