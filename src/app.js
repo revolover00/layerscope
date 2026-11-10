@@ -20,7 +20,7 @@ const state = {
   blob: null,       // kept so a multi-platform OCI index can be re-analyzed on demand
   label: '',
   platform: null,
-  compare: { a: null, b: null, running: false },  // per side: { analysis, label }
+  compare: { a: null, b: null, running: false, queue: [] },  // per side: { analysis, label }
 };
 
 // ---------------- helpers ----------------
@@ -484,9 +484,26 @@ function compareError(message) {
   box.hidden = false;
 }
 
-async function analyzeCompareSide(side, file) {
-  if (state.compare.running) return;
+// Uploads are enqueued instead of dropped: picking both files in quick
+// succession must analyze both, not silently ignore the second.
+function enqueueCompare(side, file) {
+  state.compare.queue.push({ side, file });
+  if (!state.compare.running) void runCompareQueue();
+}
+
+async function runCompareQueue() {
   state.compare.running = true;
+  try {
+    while (state.compare.queue.length) {
+      const { side, file } = state.compare.queue.shift();
+      await analyzeCompareSide(side, file);
+    }
+  } finally {
+    state.compare.running = false;
+  }
+}
+
+async function analyzeCompareSide(side, file) {
   compareError(null);
   const overlay = $('#progress-overlay');
   overlay.hidden = false;
@@ -521,8 +538,6 @@ async function analyzeCompareSide(side, file) {
     overlay.hidden = true;
     compareError(err && err.message ? err.message : String(err));
     $(`#compare-results`).hidden = true;
-  } finally {
-    state.compare.running = false;
   }
 }
 
@@ -746,7 +761,7 @@ for (const side of ['a', 'b']) {
   browse.addEventListener('click', (e) => { e.stopPropagation(); input.click(); });
   input.addEventListener('change', () => {
     const file = input.files[0];
-    if (file) analyzeCompareSide(side, file);
+    if (file) enqueueCompare(side, file);
     input.value = '';
   });
   drop.addEventListener('click', () => input.click());
@@ -759,7 +774,7 @@ for (const side of ['a', 'b']) {
   }
   drop.addEventListener('drop', (e) => {
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (file) analyzeCompareSide(side, file);
+    if (file) enqueueCompare(side, file);
   });
 }
 

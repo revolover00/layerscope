@@ -68,7 +68,7 @@ for (const [label, viewport] of [
   ['desktop 1440x900', { width: 1440, height: 900 }],
   ['mobile 390x844', { width: 390, height: 844 }],
 ]) {
-  const page = await browser.newPage({ viewport });
+  const page = await browser.newPage({ viewport, acceptDownloads: true });
   const consoleErrors = [];
   page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
@@ -117,7 +117,7 @@ for (const [label, viewport] of [
 }
 
 for (const [name, img] of [['test1-waste.tar', test1], ['test3-zstd.tar', test3]]) {
-  const page = await browser.newPage();
+  const page = await browser.newPage({ acceptDownloads: true });
   const consoleErrors = [];
   page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
@@ -191,7 +191,7 @@ for (const [name, img] of [['test1-waste.tar', test1], ['test3-zstd.tar', test3]
 //   4. it is one ellipsized line (white-space: nowrap; overflow: hidden; text-overflow: ellipsis)
 if (longname) {
   const longBrowser = await chromium.launch();
-  const page = await longBrowser.newPage();
+  const page = await longBrowser.newPage({ acceptDownloads: true });
   const consoleErrors = [];
   page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
@@ -244,7 +244,7 @@ if (longname) {
 // the Suggestions tab and asserts the two rules that must fire on it (the
 // demo image is byte-stable: added in layer 1, whiteouted in layer 3).
 {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const page = await browser.newPage({ acceptDownloads: true, viewport: { width: 1280, height: 800 } });
   const consoleErrors = [];
   page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
@@ -262,7 +262,7 @@ if (longname) {
   if (outcome === 'error') {
     const text = await page.$eval('#error-box', (el) => el.textContent.trim());
     fail('suggestions', `sample analysis failed in the browser: ${text}`);
-  } else {
+  } else try {
     await page.click('#tab-suggestions');
     await page.waitForFunction(() => !document.getElementById('panel-suggestions').hidden, null, { timeout: 30000 });
     const state = await page.evaluate(() => ({
@@ -360,6 +360,8 @@ if (longname) {
     if (filtDoc.wastedPaths.length !== 1 || filtDoc.wastedPaths[0].path !== '/app/data.bin') {
       fail('export', `filtered export carried ${filtDoc.wastedPaths.length} wasted paths, expected exactly /app/data.bin`);
     }
+  } catch (e) {
+    fail('export', `export block failed with an exception: ${e && e.message ? e.message : e}`);
   }
   if (consoleErrors.length) fail('suggestions', `console/page errors: ${consoleErrors.join(' | ')}`);
   await page.close();
@@ -376,7 +378,7 @@ if (test5 && test6) {
   const signedPts = (d) => (d === 0 ? '±0.0 pts' : `${d > 0 ? '+' : '−'}${(Math.abs(d) * 100).toFixed(1)} pts`);
   const signedCount = (d) => (d === 0 ? '±0' : `${d > 0 ? '+' : '−'}${Math.abs(d)}`);
 
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const page = await browser.newPage({ acceptDownloads: true, viewport: { width: 1280, height: 800 } });
   const consoleErrors = [];
   page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(`console: ${m.text()}`); });
@@ -398,7 +400,7 @@ if (test5 && test6) {
   if (outcome === 'error') {
     const text = await page.$eval('#compare-error', (el) => el.textContent.trim());
     fail('compare', `compare analysis failed in the browser: ${text}`);
-  } else {
+  } else try {
     const dom = await page.evaluate(() => ({
       total: document.getElementById('cd-total').textContent,
       totalSub: document.getElementById('cd-total-sub').textContent,
@@ -447,6 +449,8 @@ if (test5 && test6) {
     const swappedTotal = await page.$eval('#cd-total', (el) => el.textContent);
     if (swappedTotal !== signedBytes(-cmp.delta.totalSizeBytes)) fail('compare', `after swap, total is ${JSON.stringify(swappedTotal)}, expected ${JSON.stringify(signedBytes(-cmp.delta.totalSizeBytes))}`);
     console.log(`::notice::browser-fixtures compare: swap flips deltas (layers +2, total ${swappedTotal})`);
+  } catch (e) {
+    fail('compare', `compare block failed with an exception: ${e && e.message ? e.message : e}`);
   }
   if (consoleErrors.length) fail('compare', `console/page errors: ${consoleErrors.join(' | ')}`);
   await page.close();
