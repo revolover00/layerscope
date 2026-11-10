@@ -56,13 +56,13 @@ export async function createZstd() {
       sessions.clear();
     };
     worker.onmessage = (e) => {
-      const { id, type, bytes, byteOffset, byteLength, error, code } = e.data || {};
+      const { id, type, bytes, byteOffset, byteLength, ackBytes, error, code } = e.data || {};
       const s = sessions.get(id);
       if (!s) return;
       if (type === 'data') {
         s.pushChunk(new Uint8Array(bytes, byteOffset || 0, byteLength ?? bytes.byteLength));
       } else if (type === 'ack') {
-        s.ack(byteLength ?? 0);
+        s.ack(ackBytes ?? 0);
       } else if (type === 'done') {
         sessions.delete(id);
         s.finish();

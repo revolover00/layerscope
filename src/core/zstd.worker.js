@@ -61,7 +61,7 @@ self.onmessage = (e) => {
       if (!session) return; // late chunk after error — drop silently
       session.feed(msg.chunk, msg.final);
       // ack consumption so the page can bound its in-flight compressed bytes
-      self.postMessage({ type: 'ack', id, bytes: msg.chunk ? msg.chunk.byteLength || 0 : 0 });
+      self.postMessage({ type: 'ack', id, ackBytes: msg.chunk ? msg.chunk.byteLength || 0 : 0 });
       return;
     }
     if (type === 'cancel') {
