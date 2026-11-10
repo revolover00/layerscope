@@ -31,12 +31,79 @@ export const zstdLimitMessage = (maxBytes) => (
   `analyzeImage() callers can tune the limit via the maxLayerBytes option.`
 );
 
+// Maximum zstd window the in-browser (pure-JS) decoder accepts for frames
+// with an EXPLICIT window descriptor. fzstd back-references reach at most 32
+// MiB here by policy — a frame declaring a larger window needs "ultra"/
+// --long compression settings and fails with WindowSizeError, never a
+// generic decoder error. Single-segment frames are exempt (window == content
+// size, bounded by the maxLayerBytes budget — see README).
+export const ZSTD_MAX_WINDOW_BYTES = 32 * 1024 * 1024; // 32 MiB
+
+export class WindowSizeError extends Error {
+  constructor(windowBytes) {
+    const mib = windowBytes / 1048576;
+    super(
+      `zstd layer declares a ${mib.toFixed(1)} MiB decode window (window descriptor), exceeding the 32 MiB window ` +
+      `the in-browser decoder supports — refusing to decode. ` +
+      `Re-encode this layer with a smaller window (e.g. zstd --long=25 or the default settings) or as gzip (streaming, no window limit), ` +
+      `or analyze it with a native build. Frames with a window this large are produced by ultra/long-range compression modes.`,
+    );
+    this.name = 'WindowSizeError';
+    this.code = 'WINDOW_TOO_BIG';
+    this.windowBytes = windowBytes;
+  }
+}
+
+/**
+ * Window size of the FIRST zstd frame in `bytes`, following the frame header
+ * spec (RFC 8878 §3.1.1.2):
+ *   single_segment_flag = 1 -> window == frame content size
+ *   otherwise             -> windowBase = 2^(10 + (wd >> 3)),
+ *                           window = windowBase + (windowBase / 8) * (wd & 0x07)
+ * Returns null when the bytes don't start a zstd frame or are truncated /
+ * have no determinable window. Bytes beyond the frame header are not read.
+ * (Callers wanting multi-frame enforcement must check each frame — see
+ * analyze.js, which enforces on the first frame; later frames are bounded by
+ * the byte budget and fzstd's own ~2 GB hard allocation cap.)
+ */
+export function zstdFrameWindowSize(bytes) {
+  if (!bytes || bytes.length < 6) return null;
+  if (bytes[0] !== 0x28 || bytes[1] !== 0xb5 || bytes[2] !== 0x2f || bytes[3] !== 0xfd) return null;
+  const descriptor = bytes[4];
+  const singleSegment = (descriptor >> 5) & 0x1;
+  if (singleSegment) {
+    // window == frame content size (spec §3.1.1.2.3.2)
+    return zstdFrameContentSize(bytes);
+  }
+  const windowDescriptor = bytes[5];
+  const windowBase = 2 ** (10 + (windowDescriptor >> 3));
+  return windowBase + Math.floor(windowBase / 8) * (windowDescriptor & 0x07);
+}
+
+/** Enforce the 32 MiB window policy on a frame head (>= 6 bytes). */
+export function enforceZstdWindowLimit(head) {
+  const ws = zstdFrameWindowSize(head);
+  if (ws !== null && ws > ZSTD_MAX_WINDOW_BYTES) throw new WindowSizeError(ws);
+  return ws;
+}
+
+// Message for the refusal that fires BEFORE decoding, when the frame header
+// carries a content size over the budget. Kept textually stable — CI and
+// user docs reference it.
+export const zstdLimitBeforeMessage = (maxBytes, declaredBytes) => (
+  `zstd layer declares a decompressed size of ${(declaredBytes / 1048576).toFixed(1)} MiB (${declaredBytes} bytes), exceeding the ${(maxBytes / 1048576).toFixed(0)} MiB (${maxBytes} bytes) fallback limit — refusing to decode before allocating memory. ` +
+  `Re-encode this layer as gzip (streaming, no fixed limit) or split it into smaller layers. ` +
+  `analyzeImage() callers can tune the limit via the maxLayerBytes option.`
+);
+
 export class LayerLimitError extends Error {
-  constructor(maxBytes) {
-    super(zstdLimitMessage(maxBytes));
+  constructor(maxBytes, phase = 'decode', declaredBytes = null) {
+    super(phase === 'before' && declaredBytes != null ? zstdLimitBeforeMessage(maxBytes, declaredBytes) : zstdLimitMessage(maxBytes));
     this.name = 'LayerLimitError';
     this.code = 'LAYER_LIMIT';
     this.maxBytes = maxBytes;
+    this.phase = phase;
+    if (declaredBytes != null) this.declaredBytes = declaredBytes;
   }
 }
 
@@ -130,4 +197,80 @@ export function decodeZstdCapped(frame, { maxBytes }) {
     off += c.length;
   }
   return out;
+}
+
+
+/**
+ * Push-based streaming decompressor: feed COMPRESSED chunks, collect DECODED
+ * chunks via `onChunk`. Memory scales with chunk/window size — never with
+ * the layer size. fzstd emits a fresh buffer per block (verified), and the
+ * running byte total is enforced BEFORE the chunk reaches the sink, so a
+ * frame with no content size can never allocate more than maxBytes (plus at
+ * most one 128 KiB block).
+ *
+ * The 32 MiB window policy is NOT re-checked here — it must be enforced on
+ * the frame head BEFORE the first push (see enforceZstdWindowLimit). fzstd
+ * has no back-reference distance cap of its own.
+ */
+export function createZstdDecompressor({ maxBytes, onChunk }) {
+  let total = 0;
+  const d = new Decompress((chunk) => {
+    total += chunk.length;
+    if (total > maxBytes) throw new LayerLimitError(maxBytes);
+    onChunk(chunk);
+  });
+  return {
+    totalBytesDecoded: () => total,
+    push(chunk, final = false) {
+      try {
+        d.push(chunk, final);
+      } catch (err) {
+        if (err instanceof LayerLimitError) throw err;
+        throw new Error(`Failed to decompress zstd layer with code: ${(err && err.message) || err}`);
+      }
+    },
+  };
+}
+
+/**
+ * Bridge a compressed-byte ReadableStream to a decompressed-byte
+ * ReadableStream using fzstd's streaming decoder. Pure JS (runs on the UI
+ * thread in node tooling; the browser fallback routes through
+ * zstd.worker.js instead to keep the page responsive, but the worker runs
+ * the same createZstdDecompressor core).
+ */
+export function decompressReadable(readable, { maxBytes }) {
+  const reader = readable.getReader();
+  let pending = [];
+  let finished = false;
+  const d = createZstdDecompressor({ maxBytes, onChunk: (chunk) => pending.push(chunk) });
+  return new ReadableStream({
+    async pull(controller) {
+      if (finished) { controller.close(); return; }
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          finished = true;
+          d.push(new Uint8Array(0), true);
+          for (const chunk of pending) if (chunk.byteLength) controller.enqueue(chunk);
+          pending = [];
+          controller.close();
+          return;
+        }
+        pending = [];
+        d.push(value, false);
+        if (pending.length > 0) {
+          const out = pending;
+          pending = [];
+          for (const chunk of out) controller.enqueue(chunk);
+          return;
+        }
+        // no output from this block (e.g. header-only push) — keep reading
+      }
+    },
+    async cancel(reason) {
+      finished = true;
+      try { await reader.cancel(reason); } catch { /* best effort */ }
+    },
+  });
 }

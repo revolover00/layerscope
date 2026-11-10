@@ -14,14 +14,15 @@
 //   node tools/browser-big.mjs --url http://127.0.0.1:8321 --image /tmp/bench/big-legacy.tar --expected /tmp/bench/big-expected.json
 
 import { chromium } from 'playwright-core';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const args = process.argv.slice(2);
 const getArg = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
 const url = getArg('--url') || 'http://127.0.0.1:8321';
 const image = getArg('--image');
 const expectedPath = getArg('--expected');
-if (!image || !expectedPath) { console.error('usage: node tools/browser-big.mjs --url URL --image TAR --expected JSON'); process.exit(2); }
+const metricsOut = getArg('--metrics-out'); // optional: write browser metrics JSON here
+if (!image || !expectedPath) { console.error('usage: node tools/browser-big.mjs --url URL --image TAR --expected JSON [--metrics-out FILE]'); process.exit(2); }
 if (!existsSync(image)) { console.error(`fixture not found: ${image}`); process.exit(2); }
 if (!existsSync(expectedPath)) { console.error(`expected json not found: ${expectedPath}`); process.exit(2); }
 const expected = JSON.parse(readFileSync(expectedPath, 'utf8'));
@@ -95,6 +96,15 @@ if (outcome === 'error') {
   console.log(`::notice::browser-big metrics: elapsedMs=${elapsedMs} heapPeakBytes=${heap.peak} heapStartBytes=${heap.start} heapAfterBytes=${heap.after} heapLimitBytes=${heap.limit} heapSamples=${heap.samples}`);
   console.log(`::notice::browser-big numbers (ui): ${JSON.stringify(got)}`);
   console.log(`::notice::browser-big numbers (node reference): ${JSON.stringify(expected.display)} nodeElapsedMs=${expected.elapsedMs} nodeRssPeakBytes=${expected.rssPeakBytes} nodeHeapUsedPeakBytes=${expected.heapUsedPeakBytes}`);
+  if (metricsOut) {
+    writeFileSync(metricsOut, JSON.stringify({
+      image,
+      elapsedMs,
+      heap: { peak: heap.peak, start: heap.start, after: heap.after, limit: heap.limit, samples: heap.samples },
+      nodeReference: { elapsedMs: expected.elapsedMs, rssPeakBytes: expected.rssPeakBytes, heapUsedPeakBytes: expected.heapUsedPeakBytes },
+      display: got,
+    }, null, 2));
+  }
 
   const want = expected.display;
   for (const key of Object.keys(want)) {

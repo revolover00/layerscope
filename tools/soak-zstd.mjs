@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Decoder soak test — is the vendored WASM zstd decoder stable under load?
 //
-// Phase A: decompress the SAME zstd frame `iterations` times on ONE long-lived
-// instance (the harshest sharing scenario) and verify the sha256 of every
-// output. The app does not share instances across analyses (each analysis
-// gets a fresh one); this phase measures the decoder itself.
+// Phase A: decompress the SAME zstd frame `iterations` times through the
+// streaming fallback (decompressReadable) and verify the sha256 of every
+// re-assembled output — the streaming path analyze.js actually uses.
+// (decodeZstdCapped, the one-shot helper, is exercised in Phase A-legacy.)
 //
 // Phase B: run analyzeImage `analyses` times on the same archive and compare
 // a stable analysis fingerprint (totalSizeBytes, wastedBytes, efficiency,
@@ -18,7 +18,8 @@ import zlib from 'node:zlib';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decodeZstdCapped } from '../src/core/zstd-decode.js';
+import { decodeZstdCapped, decompressReadable } from '../src/core/zstd-decode.js';
+import { createSha256 } from '../src/core/sha256.js';
 import { analyzeImage } from '../src/core/analyze.js';
 import { synthesizeRawAsync, mulberry32 } from './synth-lib.mjs';
 
@@ -46,21 +47,40 @@ console.log(`soak: sha256(uncompressed layer) = ${expectedSha}`);
 let ok = 0;
 const divergence = [];
 for (let i = 1; i <= ITERATIONS; i++) {
-  let out = null;
+  let assembled = null;
   try {
-    out = decodeZstdCapped(new Uint8Array(frame), { maxBytes: SIZE * 2 });
+    const src = new ReadableStream({
+      start(c) {
+        // feed in 64 KiB slices — the streaming path never sees the whole frame at once
+        for (let off = 0; off < frame.length; off += 65536) {
+          c.enqueue(frame.subarray(off, Math.min(off + 65536, frame.length)));
+        }
+        c.close();
+      },
+    });
+    const decoded = decompressReadable(src, { maxBytes: SIZE * 2 });
+    const hasher = createSha256();
+    const reader = decoded.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      hasher.update(value);
+    }
+    const hex = hasher.digestHex();
+    if (hex === expectedSha) ok++;
+    else {
+      divergence.push({ iteration: i, error: 'sha256 mismatch' });
+      if (divergence.length <= 3) console.error(`  MISMATCH (sha256) at #${i}`);
+    }
   } catch (err) {
     divergence.push({ iteration: i, error: err.message });
     if (divergence.length <= 3) console.error(`  MISMATCH (throw) at #${i}: ${err.message}`);
-    continue;
-  }
-  if (sha(Buffer.from(out)) === expectedSha) ok++;
-  else {
-    divergence.push({ iteration: i, error: 'sha256 mismatch' });
-    if (divergence.length <= 3) console.error(`  MISMATCH (sha256) at #${i}`);
   }
 }
-console.log(`phase A (shared fallback decoder × ${ITERATIONS}): ok=${ok} divergence=${divergence.length}`);
+console.log(`phase A (streaming fallback × ${ITERATIONS}): ok=${ok} divergence=${divergence.length}`);
+// RSS/heap stability signal across the loop — reported, not asserted
+const mem = process.memoryUsage();
+console.log(`phase A memory after ${ITERATIONS} iterations: rss=${(mem.rss / 1048576).toFixed(1)} MiB heapUsed=${(mem.heapUsed / 1048576).toFixed(1)} MiB arrayBuffers=${(mem.external / 1048576).toFixed(1)} MiB`);
 
 // ---------- Phase B: analyze the same archive M times, compare fingerprints --
 const dir = mkdtempSync(join(tmpdir(), 'layerscope-soak-'));
