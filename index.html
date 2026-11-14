@@ -66,7 +66,7 @@
       </div>
     </div>
 
-    <div id="dropzone" class="dropzone" role="button" tabindex="0" aria-label="Choose a docker save tarball">
+    <div id="dropzone" class="dropzone" role="button" tabindex="0">
       <svg class="dz-icon" width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true">
         <path d="M22 30V10m0 0-8 8m8-8 8 8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
         <path d="M7 30v5.5A2.5 2.5 0 0 0 9.5 38h25a2.5 2.5 0 0 0 2.5-2.5V30" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
@@ -92,9 +92,9 @@
 
   <div class="container" id="how">
     <div class="how-grid">
-      <div class="how-card"><span class="how-step">01</span><h3>Parse the tar</h3><p>Headers are read sequentially with File.slice. Legacy (manifest.json) and OCI (index.json + blobs/) layouts are both recognized; gzip layers stream through DecompressionStream.</p></div>
-      <div class="how-card"><span class="how-step">02</span><h3>Diff each layer</h3><p>Every layer is compared against the squashed filesystem below it: files added, modified or deleted — including <code>.wh.</code> whiteout files and <code>.wh..wh..opq</code> opaque markers.</p></div>
-      <div class="how-card"><span class="how-step">03</span><h3>Score it</h3><p>Files overwritten or removed in later layers still occupy space in earlier ones. layerscope computes wasted bytes and an efficiency score with dive's formula, plus the 20 largest files.</p></div>
+      <div class="how-card"><span class="how-step">01</span><h2>Parse the tar</h2><p>Headers are read sequentially with File.slice. Legacy (manifest.json) and OCI (index.json + blobs/) layouts are both recognized; gzip layers stream through DecompressionStream.</p></div>
+      <div class="how-card"><span class="how-step">02</span><h2>Diff each layer</h2><p>Every layer is compared against the squashed filesystem below it: files added, modified or deleted — including <code>.wh.</code> whiteout files and <code>.wh..wh..opq</code> opaque markers.</p></div>
+      <div class="how-card"><span class="how-step">03</span><h2>Score it</h2><p>Files overwritten or removed in later layers still occupy space in earlier ones. layerscope computes wasted bytes and an efficiency score with dive's formula, plus the 20 largest files.</p></div>
     </div>
   </div>
 </section>

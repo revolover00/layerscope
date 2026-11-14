@@ -283,7 +283,7 @@ code {
 .how-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; margin-top: 84px; text-align: left; }
 .how-card { border-top: 1px solid var(--border-strong); padding: 20px 0 0; }
 .how-step { font-family: var(--mono); color: var(--dim-2); font-size: 12px; letter-spacing: .14em; }
-.how-card h3 { margin: 12px 0 8px; font-size: 19px; font-weight: 600; letter-spacing: -0.02em; }
+.how-card h2 { margin: 12px 0 8px; font-size: 19px; font-weight: 600; letter-spacing: -0.02em; }
 .how-card p { color: var(--dim); font-size: 13.5px; line-height: 1.6; }
 
 /* ---------- analysis: summary bar ---------- */
