@@ -207,7 +207,7 @@
           <button class="seg-btn" data-scope="final" type="button">In final image</button>
         </div>
       </div>
-      <div class="table-scroll">
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Table: the 20 largest files">
 <table class="table top-table">
         <thead><tr><th>#</th><th>Path</th><th>Size</th><th>Share</th><th id="top-col-context">Layer</th></tr></thead>
         <tbody id="top-tbody"></tbody>
@@ -241,9 +241,9 @@
         <div><h3>Wasted space by file</h3><p class="panel-sub">Paths present in more than one layer, largest first.</p></div>
         <input id="wasted-filter" class="filter-input" type="search" placeholder="Filter paths…" aria-label="Filter wasted paths">
       </div>
-      <div class="table-scroll">
+      <div class="table-scroll" tabindex="0" role="region" aria-label="Table: wasted space by file">
 <table class="table wasted-table">
-        <thead><tr><th>Path</th><th>Copies</th><th>Cumulative</th><th>Share of waste</th><th></th></tr></thead>
+        <thead><tr><th>Path</th><th>Copies</th><th>Cumulative</th><th>Share of waste</th><th aria-label="Share of waste (bar)"></th></tr></thead>
         <tbody id="wasted-tbody"></tbody>
       </table>
 </div>
