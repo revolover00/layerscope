@@ -170,3 +170,55 @@ jobs:
           node tools/browser-big.mjs --url http://127.0.0.1:8321 \
             --image /tmp/bench/big-legacy.tar \
             --expected /tmp/bench/big-expected.json
+
+  # Browser-compatibility matrix (TASK 4 part A): the assertion suite that
+  # already existed for Chromium, now run in all three Playwright engines on
+  # desktop (1440x900) and mobile (390x844). Firefox and WebKit are
+  # continue-on-error ON PURPOSE: their first results must be visible without
+  # breaking required checks. Chromium stays required.
+  browser-matrix:
+    name: browser matrix (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: ${{ matrix.browser != 'chromium' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Build the assertion fixtures (test1-waste, test3-zstd, test4-longname)
+        run: node tools/test-fixtures.mjs --out /tmp/bench-matrix
+
+      - name: Install the ${{ matrix.browser }} browser (playwright-core)
+        run: npx playwright-core install --with-deps ${{ matrix.browser }}
+
+      - name: Serve the site and run the ${{ matrix.browser }} compatibility matrix
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8323 --bind 127.0.0.1 >/tmp/http-matrix.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          curl -fsS -o /dev/null http://127.0.0.1:8323/index.html
+          node tools/browser-matrix.mjs --browser "${{ matrix.browser }}" --url http://127.0.0.1:8323 \
+            --test1 /tmp/bench-matrix/test1-waste.tar \
+            --test3 /tmp/bench-matrix/test3-zstd.tar \
+            --longname /tmp/bench-matrix/test4-longname.tar \
+            --out "/tmp/matrix-out/${{ matrix.browser }}"
+
+      - name: Upload ${{ matrix.browser }} screenshots and the JSON result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: browser-matrix-${{ matrix.browser }}
+          path: /tmp/matrix-out/${{ matrix.browser }}
+          if-no-files-found: warn
