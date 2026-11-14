@@ -32,7 +32,7 @@ const failing = Object.values(report.audits ?? {})
 const top5 = failing.slice(0, 5).map((a) => `${a.id}=${a.scoreDisplayMode === 'binary' || a.scoreDisplayMode === 'numeric' ? a.score : a.score.toFixed(2)}(w=${a.weight ?? 0})`);
 const moreCount = failing.length - top5.length;
 console.log(`::notice::LIGHTHOUSE_${label.toUpperCase()} ${JSON.stringify(scores)} failing_audits=${failing.length} top5=[${top5.join(',')}]${moreCount > 0 ? ` (+${moreCount} more in report)` : ''}`);
-for (const a of failing.slice(0, 5)) {
+for (const a of failing.slice(0, 3)) {
   const detail = a.numericValue != null ? ` value=${Math.round(a.numericValue)}${a.numericUnit ? a.numericUnit : ''}` : '';
   console.log(`::notice::LIGHTHOUSE_${label.toUpperCase()} audit ${a.id}: score=${a.score}${detail} — ${a.title}${a.description ? ' || ' + a.description.split('. ')[0] : ''}`);
 }
