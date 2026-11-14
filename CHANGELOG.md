@@ -6,6 +6,36 @@ All notable changes to layerscope are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- CLI `layerscope analyze <image.tar|-> [--json] [--fail-under-efficiency N]
+  [--fail-over-wasted BYTES] [--max-layer-bytes N] [--platform OS/ARCH[/VARIANT]]`
+  (Node >=20; no runtime dependencies beyond the vendored fzstd decoder).
+  Human-readable table by default; `--json` emits a deterministic
+  schemaVersion 1 report (no timestamps, raw numbers). Reads from a file path
+  or stdin (spooled to a temp file; memory stays bounded, no full-archive
+  buffering). Exit codes: 0 ok, 1 threshold breached, 2 bad input. New code in
+  `bin/layerscope.mjs` + `src/cli/`; the analysis engine (`src/core/`) is
+  untouched. `npm pack --dry-run` contains exactly the intended 19 files.
+  Unit tests cover argument parsing, exit codes, the stdin path, the
+  gzip-wrapped-archive refusal, and golden equality between the CLI's JSON and
+  the library output on the 17 dive fixtures (15 synthesizable everywhere;
+  2 disk fixtures when DIVE_REPO is set).
+- GitHub Action (`action.yml`, composite): inputs `image` (the runner runs
+  `docker save`) or `image-tar`, `min-efficiency`, `max-wasted-bytes`; outputs
+  `efficiency`, `wasted`, `reclaimable`; writes a Markdown summary to
+  $GITHUB_STEP_SUMMARY and fails the job on threshold breaches (the CLI is
+  the threshold authority). CI exercises `uses: ./` on samples/add-delete —
+  passing and failing thresholds, both input modes, and the both-inputs
+  rejection — and the new `cli-real-images` job runs the CLI on the six
+  public images from `tools/check-real-images.sh`, requiring deep equality
+  with the in-process engine.
+- `docs/CLI.md` and `docs/ACTION.md`; README "CLI and GitHub Action" section.
+- package.json is publish-ready (not published to npm by this change):
+  `private` removed; `bin`, `files` whitelist, `license`, `repository`,
+  `homepage`, `bugs`, `keywords` set; `engines` now `node >=20`; version
+  0.2.0.
+
 ### Changed
 
 - README restructured; long material moved to docs/

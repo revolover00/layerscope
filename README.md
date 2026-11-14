@@ -31,6 +31,7 @@ Drop a `.tar` from `docker save` onto the page and layerscope shows what each la
 
 ## What you get
 
+- CLI and GitHub Action: the same analysis in CI — exit codes for threshold gating (see [CLI](docs/CLI.md) / [Action](docs/ACTION.md))
 - Per layer: size, creating command, and files added / modified / deleted (whiteouts and opaque directories handled)
 - Image efficiency score, wasted bytes and reclaimable bytes
 - The 20 largest files, across all layers or in the final image
@@ -74,13 +75,32 @@ python3 -m http.server 8080   # or: npx serve .
 npm test
 ```
 
+## CLI and GitHub Action
+
+layerscope also runs on the command line (Node 20+, no runtime dependencies
+beyond the vendored fzstd decoder) and as a composite GitHub Action:
+
+```bash
+node bin/layerscope.mjs analyze your-image.tar             # human-readable table
+node bin/layerscope.mjs analyze your-image.tar --json      # stable report (schemaVersion 1)
+docker save your-image | node bin/layerscope.mjs analyze - # from stdin
+```
+
+Exit codes are CI-friendly: `0` ok, `1` a `--fail-under-efficiency` /
+`--fail-over-wasted` threshold breached, `2` bad input. The same gate as a
+GitHub Action (`uses: ./`) renders a Markdown step summary and exposes
+`efficiency` / `wasted` / `reclaimable` outputs. See
+[docs/CLI.md](docs/CLI.md) and [docs/ACTION.md](docs/ACTION.md). The package
+metadata (bin, files, engines, license) is publish-ready; it is not published
+to npm yet.
+
 ## How it was built
 
 Built with AI assistance (Claude / an AI coding agent). Correctness is checked against dive as described above, not assumed.
 
 ## More
 
-[How it works](docs/HOW-IT-WORKS.md) · [Benchmarks](docs/BENCHMARKS.md) · [Architecture and decoder notes](docs/ARCHITECTURE.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+[CLI](docs/CLI.md) · [GitHub Action](docs/ACTION.md) · [How it works](docs/HOW-IT-WORKS.md) · [Benchmarks](docs/BENCHMARKS.md) · [Architecture and decoder notes](docs/ARCHITECTURE.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ## Credits and license
 

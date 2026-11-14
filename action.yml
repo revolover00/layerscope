@@ -1,0 +1,90 @@
+name: 'LayerScope'
+description: 'Analyze a docker save archive locally with layerscope (no upload) and enforce efficiency / wasted-bytes thresholds.'
+author: 'revolover00'
+branding:
+  icon: 'layers'
+  color: 'blue'
+
+inputs:
+  image:
+    description: "Docker image name/tag to analyze; the action runs `docker save <image>` itself. Provide exactly one of `image` and `image-tar`."
+    required: false
+    default: ''
+  image-tar:
+    description: "Path to an existing uncompressed `docker save` tar archive to analyze. Provide exactly one of `image` and `image-tar`."
+    required: false
+    default: ''
+  min-efficiency:
+    description: 'Fail the job when the image efficiency ratio is below this value. Fraction in [0,1] (e.g. 0.9) or percent with % (e.g. 90%). Empty disables the check.'
+    required: false
+    default: ''
+  max-wasted-bytes:
+    description: 'Fail the job when wasted bytes exceed this integer count. Empty disables the check.'
+    required: false
+    default: ''
+
+outputs:
+  efficiency:
+    description: 'Efficiency ratio of the analyzed image (0..1), from the layerscope report.'
+    value: ${{ steps.analyze.outputs.efficiency }}
+  wasted:
+    description: 'Wasted bytes (bytes written more than once across layers), from the layerscope report.'
+    value: ${{ steps.analyze.outputs.wasted }}
+  reclaimable:
+    description: 'Reclaimable bytes (wasted minus the copies that survive in the final image), from the layerscope report.'
+    value: ${{ steps.analyze.outputs.reclaimable }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve the image archive
+      id: archive
+      shell: bash
+      env:
+        INPUT_IMAGE: ${{ inputs.image }}
+        INPUT_IMAGE_TAR: ${{ inputs.image-tar }}
+      run: |
+        set -euo pipefail
+        if [ -n "$INPUT_IMAGE" ] && [ -n "$INPUT_IMAGE_TAR" ]; then
+          echo "::error::provide exactly one of 'image' and 'image-tar', not both"
+          exit 2
+        fi
+        if [ -n "$INPUT_IMAGE_TAR" ]; then
+          if [ ! -f "$INPUT_IMAGE_TAR" ]; then
+            echo "::error::image-tar not found: $INPUT_IMAGE_TAR"
+            exit 2
+          fi
+          echo "tar=$INPUT_IMAGE_TAR" >> "$GITHUB_OUTPUT"
+        elif [ -n "$INPUT_IMAGE" ]; then
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "::error::docker is not available on this runner — provide 'image-tar' instead"
+            exit 2
+          fi
+          OUT="${RUNNER_TEMP:-/tmp}/layerscope-image-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}.tar"
+          echo "::notice::docker save $INPUT_IMAGE -> $OUT"
+          docker save -o "$OUT" "$INPUT_IMAGE" || { echo "::error::docker save failed for '$INPUT_IMAGE' — is the image built or pulled?"; exit 2; }
+          echo "tar=$OUT" >> "$GITHUB_OUTPUT"
+        else
+          echo "::error::provide exactly one of 'image' (image to docker save) and 'image-tar' (path to a docker save tar)"
+          exit 2
+        fi
+
+    - name: Analyze with layerscope
+      id: analyze
+      shell: bash
+      env:
+        TAR_PATH: ${{ steps.archive.outputs.tar }}
+        MIN_EFFICIENCY: ${{ inputs.min-efficiency }}
+        MAX_WASTED_BYTES: ${{ inputs.max-wasted-bytes }}
+      run: |
+        set +e
+        REPORT="${RUNNER_TEMP:-/tmp}/layerscope-report-$$.json"
+        ARGS=(analyze "$TAR_PATH" --json)
+        if [ -n "$MIN_EFFICIENCY" ]; then ARGS+=(--fail-under-efficiency "$MIN_EFFICIENCY"); fi
+        if [ -n "$MAX_WASTED_BYTES" ]; then ARGS+=(--fail-over-wasted "$MAX_WASTED_BYTES"); fi
+        node "$GITHUB_ACTION_PATH/bin/layerscope.mjs" "${ARGS[@]}" > "$REPORT"
+        CODE=$?
+        node "$GITHUB_ACTION_PATH/src/cli/github-action.mjs" --report "$REPORT" --exit-code "$CODE"
+        FINAL=$?
+        rm -f "$REPORT"
+        exit "$FINAL"

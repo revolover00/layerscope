@@ -1,9 +1,11 @@
 {
   "name": "layerscope",
-  "version": "0.1.0",
-  "description": "Browser-only Docker image inspector. No backend, no uploads.",
+  "version": "0.2.0",
+  "description": "Docker image inspector -- browser UI and CLI. Local-only analysis: no backend, no uploads.",
   "type": "module",
-  "private": true,
+  "bin": {
+    "layerscope": "./bin/layerscope.mjs"
+  },
   "scripts": {
     "test": "node --test",
     "synth": "node tools/synth.mjs --all",
@@ -15,10 +17,34 @@
     "browser:bench": "node tools/browser-bench.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "devDependencies": {
     "jsdom": "^31.0.0",
     "playwright-core": "^1.48.0"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/revolover00/layerscope.git"
+  },
+  "homepage": "https://github.com/revolover00/layerscope",
+  "bugs": "https://github.com/revolover00/layerscope/issues",
+  "keywords": [
+    "docker",
+    "image",
+    "container",
+    "layers",
+    "dive",
+    "dockerfile",
+    "bloat",
+    "cli"
+  ],
+  "files": [
+    "bin",
+    "src/cli",
+    "src/core",
+    "assets/vendor/fzstd",
+    "NOTICE"
+  ]
 }
