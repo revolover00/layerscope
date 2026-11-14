@@ -31,7 +31,12 @@ const failing = Object.values(report.audits ?? {})
   .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0) || wasted(b) - wasted(a) || a.id.localeCompare(b.id));
 const top5 = failing.slice(0, 5).map((a) => `${a.id}=${a.scoreDisplayMode === 'binary' || a.scoreDisplayMode === 'numeric' ? a.score : a.score.toFixed(2)}(w=${a.weight ?? 0})`);
 const moreCount = failing.length - top5.length;
-console.log(`::notice::LIGHTHOUSE_${label.toUpperCase()} ${JSON.stringify(scores)} failing_audits=${failing.length} top5=[${top5.join(',')}]${moreCount > 0 ? ` (+${moreCount} more in report)` : ''}`);
+// accessibility category audits that did not score 1 (axe-core results, incl. node counts)
+const a11yFailing = Object.values(report.audits ?? {})
+  .filter((a) => report.categories?.accessibility?.auditRefs?.some((r) => r.id === a.id))
+  .filter((a) => typeof a.score === 'number' && a.score < 1)
+  .map((a) => `${a.id}(nodes=${a.details?.items?.length ?? '?'})`);
+console.log(`::notice::LIGHTHOUSE_${label.toUpperCase()} ${JSON.stringify(scores)} failing_audits=${failing.length} top5=[${top5.join(',')}]${moreCount > 0 ? ` (+${moreCount} more in report)` : ''} a11y_issues=[${a11yFailing.join(',') || 'none'}]`);
 for (const a of failing.slice(0, 3)) {
   const detail = a.numericValue != null ? ` value=${Math.round(a.numericValue)}${a.numericUnit ? a.numericUnit : ''}` : '';
   console.log(`::notice::LIGHTHOUSE_${label.toUpperCase()} audit ${a.id}: score=${a.score}${detail} — ${a.title}${a.description ? ' || ' + a.description.split('. ')[0] : ''}`);
