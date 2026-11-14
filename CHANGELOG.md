@@ -38,6 +38,12 @@ All notable changes to layerscope are documented here. The format follows
 
 ### Changed
 
+- Docs browser-support wording aligned to the CI browser matrix: README
+  "Limitations" and docs/VERIFICATION.md now state that Chromium, Firefox
+  and WebKit are exercised via Playwright (desktop and 390x844) with
+  identical fixture numbers; WebKit is not real Safari; real Safari/iOS
+  are untested; native DecompressionStream('zstd') was unavailable in all
+  three CI builds, so the bundled fzstd fallback is what runs there.
 - README restructured; long material moved to docs/
 - Landing-page copy accuracy pass: the hero's multi-GB streaming claim
   replaced with what is tested (memory scales with the largest layer;

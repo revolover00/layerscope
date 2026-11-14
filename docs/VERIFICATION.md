@@ -177,3 +177,58 @@ as "directory" instead of "0 B → 0 B", whiteout/opaque markers are excluded
 from top-largest-file lists, and extreme user-wasted ratios render grouped
 ("2,042,740%"). Zero console/page errors were observed across the landing,
 layers, wasted-space and top-files views after the fixes.
+
+## Browser matrix
+
+The site is exercised in all three Playwright engines — Chromium (required for
+merge), Firefox and WebKit (`continue-on-error`, non-blocking) — on desktop
+1440x900 and mobile 390x844, by the `browser-matrix` job in
+`.github/workflows/browser-bench.yml` and the read-only probe
+`tools/browser-matrix.mjs` (nothing under `src/` is touched by it; it only
+measures and screenshots). Its checks:
+
+- landing page loads with no visible "Reading archive" text and `#sample-btn`
+  visible and enabled (desktop and mobile), plus zero console/page errors;
+- "Try a sample image" click drives a real analysis to completion;
+- `test1-waste.tar` (docker-save layout) and `test3-zstd.tar` (OCI layout with
+  zstd layers) analyzed three times each in the same page — every run must
+  equal the exact expected numbers (4 layers; wasted 5,652,480 bytes = "5.39 MB";
+  reclaimable 5,447,680 bytes = "5.20 MB"; efficiency ~3.6%) and all three uploads
+  of a fixture must be byte-for-byte identical;
+- `test4-longname.tar` (78-character repository tag) — `#image-name` keeps the
+  full string, carries it in `title`, stays a single ellipsized line
+  (white-space: nowrap, overflow: hidden, text-overflow: ellipsis), and its
+  rendered rect never intersects `.summary-stats` or clips outside the viewport;
+- the fzstd fallback path, forced by disabling the native
+  `DecompressionStream('zstd')` in an init script — analysis of test3 must
+  still produce the exact expected numbers;
+- no console or page errors anywhere (a single one fails the engine's run).
+
+**Native `DecompressionStream('zstd')` was unavailable in all three CI
+builds** (Chromium, Firefox and WebKit via Playwright on `ubuntu-latest`), so
+the bundled fzstd fallback is what actually runs there, twice over — once as
+the natural path and once via the forced-disable run. WebKit via Playwright is
+**not** real Safari; real Safari and iOS devices are untested.
+
+Last green runs (branch head `8960452`):
+
+- Browser benchmark, push —
+  https://github.com/revolover00/layerscope/actions/runs/43586513519
+- CI, push —
+  https://github.com/revolover00/layerscope/actions/runs/43586513454
+- Browser benchmark, pull_request (PR #34) —
+  https://github.com/revolover00/layerscope/actions/runs/43586519281
+- CI, pull_request (PR #34) —
+  https://github.com/revolover00/layerscope/actions/runs/43586519339
+
+Per-engine screenshots and the full per-check JSON results are uploaded as
+artifacts named `browser-matrix-{chromium,firefox,webkit}` on those runs
+(treat them as the source of truth; job success alone means "every check
+passed" via the probe's exit gate).
+
+One probe defect was found and fixed during bring-up: the longname check first
+asserted horizontal non-overlap (`image-name.right <= stats.left`), which only
+holds in the side-by-side desktop layout and falsely failed at 390x844 (where
+the ≤1080px layout wraps stats below the header). It was corrected to a true
+rect-intersection test; no app code changed. See the PR #34 history for
+details and the before/after numbers.
