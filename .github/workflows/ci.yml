@@ -144,3 +144,91 @@ jobs:
           path: /tmp/layerscope-real-images
           if-no-files-found: warn
 
+  cli-real-images:
+    name: CLI on the six public images vs the in-process engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Pull images, docker save, compare the CLI JSON against analyzeImage()
+        run: tools/ci/check-real-cli.sh
+
+  action:
+    name: 'composite action (uses: ./) on the add-delete sample'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Build the sample image
+        run: docker build --no-cache -t layerscope-samples/add-delete samples/add-delete
+
+      - name: Action with image input and a lenient threshold (must pass)
+        id: ok
+        uses: ./
+        with:
+          image: layerscope-samples/add-delete
+          min-efficiency: '0'
+          max-wasted-bytes: '999999999999'
+
+      - name: Assert the action outputs
+        run: |
+          set -euo pipefail
+          node -e '
+            const [eff, wasted, rec] = process.argv.slice(1);
+            const e = Number(eff);
+            if (!(e >= 0 && e <= 1)) throw new Error(`efficiency output not in [0,1]: ${eff}`);
+            if (!(Number(wasted) > 0)) throw new Error(`wasted output not a positive byte count: ${wasted}`);
+            if (!(Number(rec) >= 0)) throw new Error(`reclaimable output not a byte count: ${rec}`);
+            console.log(`action outputs ok: efficiency=${eff} wasted=${wasted} reclaimable=${rec}`);
+          ' "${{ steps.ok.outputs.efficiency }}" "${{ steps.ok.outputs.wasted }}" "${{ steps.ok.outputs.reclaimable }}"
+
+      - name: Save the image as a tar for the image-tar input path
+        run: docker save -o /tmp/add-delete.tar layerscope-samples/add-delete
+
+      - name: Action with image-tar input and a lenient threshold (must pass)
+        id: oktar
+        uses: ./
+        with:
+          image-tar: /tmp/add-delete.tar
+          min-efficiency: '0'
+
+      - name: Action with a failing threshold (expected to fail the step)
+        id: strict
+        uses: ./
+        continue-on-error: true
+        with:
+          image: layerscope-samples/add-delete
+          min-efficiency: '0.999999'
+
+      - name: Assert the strict run failed
+        run: |
+          set -euo pipefail
+          test "${{ steps.strict.outcome }}" = "failure" || { echo "::error::expected the strict threshold run to fail, got '${{ steps.strict.outcome }}'"; exit 1; }
+          echo "strict threshold correctly failed the action"
+
+      - name: Providing both image and image-tar is rejected
+        id: both
+        uses: ./
+        continue-on-error: true
+        with:
+          image: layerscope-samples/add-delete
+          image-tar: /tmp/add-delete.tar
+
+      - name: Assert the both-inputs run failed
+        run: |
+          set -euo pipefail
+          test "${{ steps.both.outcome }}" = "failure" || { echo "::error::expected the both-inputs run to fail, got '${{ steps.both.outcome }}'"; exit 1; }
+          echo "both-inputs correctly rejected"

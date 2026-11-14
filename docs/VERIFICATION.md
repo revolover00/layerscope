@@ -6,8 +6,43 @@ Numbers below are real output from this repository, not aspirations.
 
 ```
 $ npm test          # node --test
-# tests 49   # pass 49   # fail 0
+# tests 97   # pass 95   # fail 0   # skipped 2
 ```
+
+The 2 skips are the two dive-repo disk fixtures (`test-docker-image`,
+`test-oci-docker-image`), which only run with `DIVE_REPO` set — same
+convention as `tools/verify-fixtures.mjs`.
+
+## CLI
+
+```
+$ node bin/layerscope.mjs analyze assets/samples/layerscope-demo.tar
+layerscope/sample:latest — docker-save (legacy)
+...
+total layer bytes   64.1 KB
+wasted              64.0 KB (85,171% of user bytes)
+efficiency          0.154% (ratio 0.00153823)
+
+$ node bin/layerscope.mjs analyze assets/samples/layerscope-demo.tar --fail-under-efficiency 0.9
+layerscope: efficiency 0.154% (ratio 0.00153823) is below the required 90.0% (ratio 0.900000) (--fail-under-efficiency 0.9)
+$ echo $?
+1
+```
+
+- Argument parsing, exit codes (0/1/2), stdin spooling and the
+  gzip-wrapped-archive refusal are covered by `tests/cli.test.mjs`.
+- Golden equality between `layerscope analyze --json` and the in-process
+  engine (`buildReport(analyzeImage(...))`) is asserted on every
+  synthesizable dive fixture (15 of the 17; the 2 disk fixtures join when
+  `DIVE_REPO` is set) — see the `golden:` tests in `tests/cli.test.mjs`.
+- `npm pack --dry-run` is asserted by `tests/pack.test.mjs` to contain
+  exactly the intended 19 files (package, CLI, engine, vendored fzstd).
+- CI (`cli-real-images` job) runs the CLI on the six public images from
+  `tools/check-real-images.sh` and requires its `--json` to deep-equal the
+  in-process engine (`tools/ci/compare-cli-web.mjs`), no tolerances.
+- CI (`action` job) exercises `uses: ./` on `samples/add-delete`: a passing
+  threshold, a failing threshold (`min-efficiency: 0.999999`), both input
+  modes (`image` / `image-tar`) and the both-inputs rejection.
 
 ## layerscope vs. dive's own golden files
 
