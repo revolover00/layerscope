@@ -25,3 +25,10 @@ icon from Lucide, Feather, Heroicons or any other icon set.
 
 Daemon-connected sample comparison uses the released dive CLI; no dive source
 code is vendored in this repository.
+
+4. fzstd — `assets/vendor/fzstd/index.mjs`
+   fzstd (101Arrowz) is MIT; vendored unmodified as the pure-JS fallback
+   zstd decoder used by the browser, the Node engine and the npm package.
+   https://github.com/101Arrowz/fzstd
+   Copyright Daniel Plante (101Arrowz). Released under the MIT License.
+   License text: assets/vendor/fzstd/LICENSE.txt
