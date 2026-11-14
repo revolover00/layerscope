@@ -183,7 +183,6 @@ function renderLayerTable(a) {
     tr.tabIndex = 0;
     tr.dataset.index = String(layer.index);
     tr.setAttribute('role', 'button');
-    tr.setAttribute('aria-label', `Select layer ${layer.index}`);
 
     const tdIdx = el('td', 'idx', String(layer.index));
     const tdBar = el('td', 'size-bar-cell');
