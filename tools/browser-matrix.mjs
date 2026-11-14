@@ -233,14 +233,21 @@ for (const [viewportLabel, viewport] of [
     const r = await page.evaluate(() => {
       const nameEl = document.getElementById('image-name');
       const stats = document.querySelector('.summary-stats');
-      const nameRect = nameEl.getBoundingClientRect();
-      const statsRect = stats.getBoundingClientRect();
+      const n = nameEl.getBoundingClientRect();
+      const st = stats.getBoundingClientRect();
       const cs = window.getComputedStyle(nameEl);
+      // True rect intersection works on the desktop side-by-side layout AND
+      // the <=1080px single-column layout (horizontal "right <= statsLeft"
+      // only makes sense when both sit in one row).
+      const intersects = !(n.right <= st.left || st.right <= n.left || n.bottom <= st.top || st.bottom <= n.top);
+      const clipped = n.left < -1 || n.right > window.innerWidth + 1;
       return {
         text: nameEl.textContent,
         title: nameEl.getAttribute('title'),
-        right: nameRect.right,
-        statsLeft: statsRect.left,
+        nameRect: { left: Math.round(n.left), right: Math.round(n.right), top: Math.round(n.top), bottom: Math.round(n.bottom) },
+        statsRect: { left: Math.round(st.left), right: Math.round(st.right), top: Math.round(st.top), bottom: Math.round(st.bottom) },
+        rectIntersects: intersects,
+        viewportClipped: clipped,
         whiteSpace: cs.whiteSpace,
         overflow: cs.overflow,
         textOverflow: cs.textOverflow,
@@ -249,7 +256,8 @@ for (const [viewportLabel, viewport] of [
     const ok =
       r.text === LONG_TAG &&
       r.title === LONG_TAG &&
-      r.right <= r.statsLeft + 1 &&
+      !r.rectIntersects &&
+      !r.viewportClipped &&
       r.whiteSpace === 'nowrap' &&
       r.overflow === 'hidden' &&
       r.textOverflow === 'ellipsis';
@@ -271,6 +279,8 @@ await withPage('fallback test3', { width: 1440, height: 900 }, async (page) => {
 }, { disableZstd: true });
 
 await browser.close();
+
+record('no-console-errors', consoleErrors.length === 0, consoleErrors.length ? consoleErrors.join(' | ').slice(0, 1200) : '');
 
 const failed = checks.filter((c) => c.status === 'fail');
 const result = {
