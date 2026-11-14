@@ -7,8 +7,6 @@ name: Lighthouse
 
 on:
   workflow_dispatch:
-  push:
-    branches: [arena/fa455b71-layerscope-lighthouse-axe]
 
 jobs:
   lighthouse:
