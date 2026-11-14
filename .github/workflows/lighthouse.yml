@@ -1,0 +1,62 @@
+name: Lighthouse
+
+# workflow_dispatch ONLY (per project owner): runs Lighthouse against a
+# locally-served copy of the site (mobile + desktop presets) and uploads the
+# JSON/HTML reports as artifacts. Nothing else triggers this workflow and it
+# gates nothing — it is a reporting tool.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  lighthouse:
+    name: lighthouse (mobile + desktop)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Serve the site
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8324 --bind 127.0.0.1 >/tmp/http-lh.log 2>&1 &
+          sleep 1
+          curl -fsS -o /dev/null http://127.0.0.1:8324/index.html
+
+      - name: Lighthouse (mobile)
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          npx --yes lighthouse@12 http://127.0.0.1:8324/ \
+            --quiet \
+            --chrome-flags="--headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage" \
+            --output=json,html \
+            --output-path=reports/mobile
+
+      - name: Lighthouse (desktop)
+        run: |
+          set -euo pipefail
+          npx --yes lighthouse@12 http://127.0.0.1:8324/ \
+            --quiet \
+            --chrome-flags="--headless=new --no-sandbox --disable-gpu --disable-dev-shm-usage" \
+            --preset=desktop \
+            --output=json,html \
+            --output-path=reports/desktop
+
+      - name: Summarize (mobile) — scores + top failing audits
+        run: node tools/lighthouse-summary.mjs reports/mobile.report.json mobile
+
+      - name: Summarize (desktop) — scores + top failing audits
+        run: node tools/lighthouse-summary.mjs reports/desktop.report.json desktop
+
+      - name: Upload Lighthouse reports (JSON + HTML)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lighthouse-reports
+          path: reports/
+          if-no-files-found: warn

@@ -215,6 +215,22 @@ jobs:
             --longname /tmp/bench-matrix/test4-longname.tar \
             --out "/tmp/matrix-out/${{ matrix.browser }}"
 
+      # axe-core scans of the four main views (landing, results/Layers,
+      # Wasted space, Top 20 files) on both viewports. NON-BLOCKING on
+      # purpose: violations are echoed as ::warning:: lines and uploaded as
+      # part of the same artifact directory; the step never fails.
+      - name: axe-core accessibility scan (${{ matrix.browser }}, non-blocking)
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8326 --bind 127.0.0.1 >/tmp/http-axe.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          sleep 1
+          curl -fsS -o /dev/null http://127.0.0.1:8326/index.html
+          node tools/browser-axe.mjs --browser "${{ matrix.browser }}" --url http://127.0.0.1:8326 \
+            --out "/tmp/matrix-out/${{ matrix.browser }}"
+
       - name: Upload ${{ matrix.browser }} screenshots and the JSON result
         if: always()
         uses: actions/upload-artifact@v7
