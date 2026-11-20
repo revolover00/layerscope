@@ -17,7 +17,7 @@
     "browser:bench": "node tools/browser-bench.mjs"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.15.0"
   },
   "devDependencies": {
     "axe-core": "^4.14.0",

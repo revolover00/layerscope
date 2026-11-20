@@ -91,14 +91,16 @@ test('no-FCS over-limit: refusal happens DURING decode with a clear error', asyn
   );
 });
 
-test('huge-claims no-FCS: a tiny archive declaring nothing, decoding to 600 MiB of zeros, is cut off mid-decode', async () => {
-  const zeros = Buffer.alloc(600 * 1024 * 1024, 0);
+test('huge-claims no-FCS: a tiny archive that expands just beyond the decode cap is cut off mid-decode', async () => {
+  // A small margin over the 160 MiB cap proves streaming refusal without
+  // needlessly retaining a 600 MiB source buffer alongside the decoded data.
+  const zeros = Buffer.alloc(161 * 1024 * 1024, 0);
   const buf = await synthesizeRawAsync({
     format: 'oci-save',
     compression: 'zstd',
     zstdContentSizeFlag: 0,
     layers: [[{ name: 'data/zeros.bin', content: zeros, mode: 0o644 }]],
-    history: [{ created_by: 'RUN dd if=/dev/zero of=/data/zeros.bin bs=1M count=600' }],
+    history: [{ created_by: 'RUN dd if=/dev/zero of=/data/zeros.bin bs=1M count=161' }],
     repoTag: 'layerscope/huge-claims:latest',
   });
   assert.ok(buf.length < 1024 * 1024, `archive must be tiny, got ${buf.length}`);

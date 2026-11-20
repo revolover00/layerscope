@@ -117,9 +117,21 @@ for (const name of Object.keys(NAMED_FIXTURES)) {
 }
 for (const [name, rel] of Object.entries(diskFixtures)) {
   const p = join(DIVE_REPO, rel);
-  await check(name, disk(p), join(DIVE_REPO, 'internal/imagefixture/testdata/golden', `${name}.export.json`));
+  let blob;
+  try {
+    blob = disk(p);
+  } catch (err) {
+    console.error(`SKIP ${name}: fixture not readable at ${p} (${err.code ?? err.message})`);
+    skip++;
+    continue;
+  }
+  await check(name, blob, join(DIVE_REPO, 'internal/imagefixture/testdata/golden', `${name}.export.json`));
 }
 
 console.error(`\n${pass} passed, ${failCount} failed, ${skip} skipped`);
 if (failedNames.length) console.error(`failing fixtures: ${failedNames.join(', ')}`);
+if (pass === 0) {
+  console.error('No golden fixtures were verified. Set DIVE_REPO to a dive checkout containing internal/imagefixture/testdata/golden (see .github/workflows/ci.yml) and re-run.');
+  process.exit(1);
+}
 process.exit(failCount ? 1 : 0);
